@@ -57,8 +57,21 @@
             <option value="1">Hermes</option>
           </select>
         </div>
+      </div>
+      <div class="preset-row">
+        <button id="savePresetBtn" class="btn-secondary btn-sm">Save Preset</button>
+        <button id="loadPresetBtn" class="btn-secondary btn-sm">Load Preset</button>
+        <button id="deletePresetBtn" class="btn-secondary btn-sm btn-danger-sm">Delete Preset</button>
+      </div>
+      <div id="presetStatus" class="preset-status"></div>
+    </div>
+
+    <!-- OpenClaw fields -->
+    <div class="card" id="openclawSection">
+      <h2><span class="dot"></span>OpenClaw Settings</h2>
+      <div class="grid">
         <div>
-          <label for="oc_host">OpenClaw Host</label>
+          <label for="oc_host">Host</label>
           <input type="text" id="oc_host" placeholder="127.0.0.1">
         </div>
         <div>
@@ -76,6 +89,33 @@
         <div class="full">
           <label for="oc_api_key">API Key</label>
           <input type="password" id="oc_api_key" placeholder="API key">
+        </div>
+      </div>
+    </div>
+
+    <!-- Hermes fields -->
+    <div class="card" id="hermesSection" style="display:none">
+      <h2><span class="dot"></span>Hermes Settings</h2>
+      <div class="grid">
+        <div>
+          <label for="hm_host">Host</label>
+          <input type="text" id="hm_host" placeholder="127.0.0.1">
+        </div>
+        <div>
+          <label for="hm_port">Port</label>
+          <input type="number" id="hm_port" placeholder="8080">
+        </div>
+        <div>
+          <label for="hm_model">Model</label>
+          <input type="text" id="hm_model" placeholder="">
+        </div>
+        <div>
+          <label for="hm_agent_id">Agent ID</label>
+          <input type="text" id="hm_agent_id" placeholder="">
+        </div>
+        <div class="full">
+          <label for="hm_api_key">API Key</label>
+          <input type="password" id="hm_api_key" placeholder="API key">
         </div>
       </div>
     </div>

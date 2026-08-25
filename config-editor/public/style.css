@@ -157,6 +157,13 @@ button:active { transform: translateY(1px); }
 /* Hint text */
 .hint { font-size: .78rem; color: var(--muted); margin-top: .5rem; }
 
+/* Preset buttons */
+.preset-row { display: flex; gap: .5rem; margin-top: .9rem; flex-wrap: wrap; }
+.btn-sm { min-width: auto; padding: .45rem .8rem; font-size: .82rem; flex: 0 0 auto; }
+.btn-danger-sm { background: rgba(248,113,113,.12); color: var(--red); border: 1px solid rgba(248,113,113,.3); }
+.btn-danger-sm:hover { background: rgba(248,113,113,.2); }
+.preset-status { font-size: .82rem; color: var(--muted); margin-top: .5rem; min-height: 1.2rem; }
+
 /* Textarea */
 textarea {
   width: 100%;

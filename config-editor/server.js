@@ -17,6 +17,7 @@ if (ipArgIdx !== -1 && args[ipArgIdx + 1]) {
 // Path to the ai-server .env (the real source of truth for config)
 const ENV_PATH = path.resolve(__dirname, '..', 'ai-server', '.env');
 const CONFIG_LOCAL_PATH = path.join(__dirname, 'config.yaml');
+const PRESETS_PATH = path.join(__dirname, 'presets.json');
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -73,6 +74,69 @@ function serializeEnv(config, originalText) {
   }
   return result.join('\n');
 }
+
+// ---- API: Presets ----
+// Presets store per-backend settings so you can switch without retyping.
+// Each preset is a subset of env keys relevant to that backend.
+
+function loadPresets() {
+  try {
+    if (fs.existsSync(PRESETS_PATH)) {
+      return JSON.parse(fs.readFileSync(PRESETS_PATH, 'utf8'));
+    }
+  } catch (e) {
+    console.error('[config-editor] Failed to load presets:', e.message);
+  }
+  return { openclaw: null, hermes: null };
+}
+
+function savePresets(presets) {
+  try {
+    fs.writeFileSync(PRESETS_PATH, JSON.stringify(presets, null, 2), 'utf8');
+    console.log('[config-editor] Presets saved to', PRESETS_PATH);
+  } catch (e) {
+    console.error('[config-editor] Failed to save presets:', e.message);
+  }
+}
+
+// Backend-specific keys that get stored per-preset
+const BACKEND_KEYS = {
+  openclaw: ['OPENCLAW_HOST', 'OPENCLAW_PORT', 'OPENCLAW_MODEL', 'OPENCLAW_AGENT_ID', 'OPENCLAW_API_KEY'],
+  hermes: ['HERMES_HOST', 'HERMES_PORT', 'HERMES_MODEL', 'HERMES_AGENT_ID', 'HERMES_API_KEY'],
+};
+
+app.get('/api/presets', (req, res) => {
+  res.json(loadPresets());
+});
+
+app.post('/api/presets', (req, res) => {
+  const { backend, config } = req.body;
+  if (!backend || !BACKEND_KEYS[backend]) {
+    return res.status(400).json({ error: 'Invalid backend (must be openclaw or hermes)' });
+  }
+  const presets = loadPresets();
+  // Extract only the backend-specific keys from the full config
+  const snapshot = {};
+  for (const key of BACKEND_KEYS[backend]) {
+    if (config[key] !== undefined) {
+      snapshot[key] = config[key];
+    }
+  }
+  presets[backend] = snapshot;
+  savePresets(presets);
+  res.json({ ok: true, preset: snapshot });
+});
+
+app.delete('/api/presets/:backend', (req, res) => {
+  const { backend } = req.params;
+  if (!BACKEND_KEYS[backend]) {
+    return res.status(400).json({ error: 'Invalid backend' });
+  }
+  const presets = loadPresets();
+  delete presets[backend];
+  savePresets(presets);
+  res.json({ ok: true });
+});
 
 // ---- API: Load config from .env ----
 app.get('/api/config', (req, res) => {

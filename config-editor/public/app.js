@@ -165,6 +165,143 @@ document.getElementById('restartBtn').addEventListener('click', restartServer);
 document.getElementById('saveBtn2').addEventListener('click', saveToEnv);
 document.getElementById('restartBtn2').addEventListener('click', restartServer);
 
+// ---- Backend selector + Presets ----
+const backendSelect = document.getElementById('backend');
+const openclawSection = document.getElementById('openclawSection');
+const hermesSection = document.getElementById('hermesSection');
+const presetStatus = document.getElementById('presetStatus');
+
+function updateBackendVisibility() {
+  const isHermes = backendSelect.value === '1';
+  openclawSection.style.display = isHermes ? 'none' : '';
+  hermesSection.style.display = isHermes ? '' : 'none';
+}
+backendSelect.addEventListener('change', updateBackendVisibility);
+updateBackendVisibility();
+
+// Collect only backend-specific fields for the current backend
+function collectBackendConfig() {
+  const isHermes = backendSelect.value === '1';
+  if (isHermes) {
+    return {
+      HERMES_HOST: val('hm_host'),
+      HERMES_PORT: val('hm_port'),
+      HERMES_MODEL: val('hm_model'),
+      HERMES_AGENT_ID: val('hm_agent_id'),
+      HERMES_API_KEY: val('hm_api_key'),
+    };
+  }
+  return {
+    OPENCLAW_HOST: val('oc_host'),
+    OPENCLAW_PORT: val('oc_port'),
+    OPENCLAW_MODEL: val('oc_model'),
+    OPENCLAW_AGENT_ID: val('oc_agent_id'),
+    OPENCLAW_API_KEY: val('oc_api_key'),
+  };
+}
+
+function getBackendName() {
+  return backendSelect.value === '1' ? 'hermes' : 'openclaw';
+}
+
+// Save current backend fields as a preset
+async function savePreset() {
+  const backend = getBackendName();
+  const config = collectBackendConfig();
+  presetStatus.textContent = 'Saving ' + backend + ' preset...';
+  try {
+    const res = await fetch('/api/presets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backend, config }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'HTTP ' + res.status);
+    presetStatus.textContent = backend + ' preset saved ✓';
+    showStatus(backend + ' preset saved ✓');
+  } catch (e) {
+    presetStatus.textContent = 'Save failed: ' + e.message;
+  }
+}
+
+// Load preset for current backend and fill fields
+async function loadPreset() {
+  const backend = getBackendName();
+  presetStatus.textContent = 'Loading ' + backend + ' preset...';
+  try {
+    const res = await fetch('/api/presets');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const presets = await res.json();
+    const preset = presets[backend];
+    if (!preset) {
+      presetStatus.textContent = 'No ' + backend + ' preset saved yet';
+      return;
+    }
+    if (backend === 'openclaw') {
+      setVal('oc_host', preset.OPENCLAW_HOST || '');
+      setVal('oc_port', preset.OPENCLAW_PORT || '18789');
+      setVal('oc_model', preset.OPENCLAW_MODEL || '');
+      setVal('oc_agent_id', preset.OPENCLAW_AGENT_ID || '');
+      setVal('oc_api_key', preset.OPENCLAW_API_KEY || '');
+    } else {
+      setVal('hm_host', preset.HERMES_HOST || '');
+      setVal('hm_port', preset.HERMES_PORT || '');
+      setVal('hm_model', preset.HERMES_MODEL || '');
+      setVal('hm_agent_id', preset.HERMES_AGENT_ID || '');
+      setVal('hm_api_key', preset.HERMES_API_KEY || '');
+    }
+    presetStatus.textContent = backend + ' preset loaded ✓';
+    showStatus(backend + ' preset loaded ✓');
+  } catch (e) {
+    presetStatus.textContent = 'Load failed: ' + e.message;
+  }
+}
+
+// Delete preset for current backend
+async function deletePreset() {
+  const backend = getBackendName();
+  if (!confirm('Delete the ' + backend + ' preset?')) return;
+  presetStatus.textContent = 'Deleting ' + backend + ' preset...';
+  try {
+    const res = await fetch('/api/presets/' + backend, { method: 'DELETE' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    presetStatus.textContent = backend + ' preset deleted ✓';
+    showStatus(backend + ' preset deleted ✓');
+  } catch (e) {
+    presetStatus.textContent = 'Delete failed: ' + e.message;
+  }
+}
+
+document.getElementById('savePresetBtn').addEventListener('click', savePreset);
+document.getElementById('loadPresetBtn').addEventListener('click', loadPreset);
+document.getElementById('deletePresetBtn').addEventListener('click', deletePreset);
+
+// Also collect Hermes fields for saveToEnv
+const origCollectConfig = collectConfig;
+collectConfig = function() {
+  const config = origCollectConfig();
+  // Add Hermes fields if visible
+  if (hermesSection.style.display !== 'none') {
+    config['HERMES_HOST'] = val('hm_host');
+    config['HERMES_PORT'] = val('hm_port');
+    config['HERMES_MODEL'] = val('hm_model');
+    config['HERMES_AGENT_ID'] = val('hm_agent_id');
+    config['HERMES_API_KEY'] = val('hm_api_key');
+  }
+  return config;
+};
+
+// Populate Hermes fields from env if present
+const origPopulateConfig = populateConfig;
+populateConfig = function(config) {
+  origPopulateConfig(config);
+  setVal('hm_host', config['HERMES_HOST'] || '127.0.0.1');
+  setVal('hm_port', config['HERMES_PORT'] || '8080');
+  setVal('hm_model', config['HERMES_MODEL'] || '');
+  setVal('hm_agent_id', config['HERMES_AGENT_ID'] || '');
+  setVal('hm_api_key', config['HERMES_API_KEY'] || '');
+};
+
 // ---- Live Controls: Volume ----
 const volumeSlider = document.getElementById('volume');
 const volumeVal = document.getElementById('volumeVal');

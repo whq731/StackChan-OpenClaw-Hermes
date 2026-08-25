@@ -37,6 +37,7 @@ function collectConfig() {
   // Fast ack
   config['STACKCHAN_FAST_ACK_ENABLED'] = document.getElementById('fast_ack').checked ? 'true' : 'false';
   config['STACKCHAN_FAST_ACK_TEXT'] = val('fast_ack_text');
+  config['STACKCHAN_FAST_ACK_TEXTS'] = val('fast_ack_text');
   // Standby
   config['STACKCHAN_STANDBY_PHRASES'] = val('standby_phrases');
   config['STACKCHAN_STANDBY_ACK_TEXT'] = val('standby_ack');

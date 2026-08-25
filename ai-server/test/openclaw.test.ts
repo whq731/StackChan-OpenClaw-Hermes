@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { OpenClawClient } from '../src/openclaw.ts'
+import { AgentHttpClient } from '../src/agent_client.ts'
 
-// Minimal mock fetch for unit testing OpenClawClient
+// Minimal mock fetch for unit testing AgentHttpClient
 type FetchCall = {
     url: string
     init: RequestInit
@@ -71,7 +71,7 @@ function mockFetch(response: {
     }
 }
 
-test('OpenClawClient submits prompt and returns content', async () => {
+test('AgentHttpClient submits prompt and returns content', async () => {
     const mock = mockFetch({
         status: 200,
         json: {
@@ -79,7 +79,7 @@ test('OpenClawClient submits prompt and returns content', async () => {
         },
     })
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',
@@ -109,13 +109,13 @@ test('OpenClawClient submits prompt and returns content', async () => {
     mock.restore()
 })
 
-test('OpenClawClient throws on 401 auth error without leaking response body', async () => {
+test('AgentHttpClient throws on 401 auth error without leaking response body', async () => {
     const mock = mockFetch({
         status: 401,
         body: 'Unauthorized: invalid API key "secret-key-123"',
     })
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'bad-key',
@@ -134,13 +134,13 @@ test('OpenClawClient throws on 401 auth error without leaking response body', as
     mock.restore()
 })
 
-test('OpenClawClient throws on 500 server error', async () => {
+test('AgentHttpClient throws on 500 server error', async () => {
     const mock = mockFetch({
         status: 500,
         body: 'Internal Server Error',
     })
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',
@@ -148,19 +148,19 @@ test('OpenClawClient throws on 500 server error', async () => {
 
     await assert.rejects(
         client.submitPrompt('test'),
-        /OpenClaw request failed: HTTP 500/,
+        /Agent request failed: HTTP 500/,
     )
 
     mock.restore()
 })
 
-test('OpenClawClient throws when response has no content', async () => {
+test('AgentHttpClient throws when response has no content', async () => {
     const mock = mockFetch({
         status: 200,
         json: { choices: [{ message: {} }] },
     })
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',
@@ -168,13 +168,13 @@ test('OpenClawClient throws when response has no content', async () => {
 
     await assert.rejects(
         client.submitPrompt('test'),
-        /OpenClaw returned no content/,
+        /Agent returned no content/,
     )
 
     mock.restore()
 })
 
-test('OpenClawClient throws on API error in response body', async () => {
+test('AgentHttpClient throws on API error in response body', async () => {
     const mock = mockFetch({
         status: 200,
         json: {
@@ -182,7 +182,7 @@ test('OpenClawClient throws on API error in response body', async () => {
         },
     })
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',
@@ -190,13 +190,13 @@ test('OpenClawClient throws on API error in response body', async () => {
 
     await assert.rejects(
         client.submitPrompt('test'),
-        /OpenClaw error: Agent not found/,
+        /Agent error: Agent not found/,
     )
 
     mock.restore()
 })
 
-test('OpenClawClient streamPrompt yields delta and complete events with full text', async () => {
+test('AgentHttpClient streamPrompt yields delta and complete events with full text', async () => {
     const sseLines = [
         'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
         'data: {"choices":[{"delta":{"content":" world"}}]}\n',
@@ -208,7 +208,7 @@ test('OpenClawClient streamPrompt yields delta and complete events with full tex
         stream: sseLines,
     })
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',
@@ -231,7 +231,7 @@ test('OpenClawClient streamPrompt yields delta and complete events with full tex
     mock.restore()
 })
 
-test('OpenClawClient streamPrompt handles stream ending without [DONE]', async () => {
+test('AgentHttpClient streamPrompt handles stream ending without [DONE]', async () => {
     // Stream ends abruptly — should still emit complete with accumulated text
     const sseLines = [
         'data: {"choices":[{"delta":{"content":"Partial"}}]}\n',
@@ -244,7 +244,7 @@ test('OpenClawClient streamPrompt handles stream ending without [DONE]', async (
         stream: sseLines,
     })
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',
@@ -267,7 +267,7 @@ test('OpenClawClient streamPrompt handles stream ending without [DONE]', async (
     mock.restore()
 })
 
-test('OpenClawClient streamPrompt handles data: without space prefix', async () => {
+test('AgentHttpClient streamPrompt handles data: without space prefix', async () => {
     // SSE spec allows "data:" without space
     const sseLines = [
         'data:{"choices":[{"delta":{"content":"Hi"}}]}\n',
@@ -279,7 +279,7 @@ test('OpenClawClient streamPrompt handles data: without space prefix', async () 
         stream: sseLines,
     })
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',
@@ -299,7 +299,7 @@ test('OpenClawClient streamPrompt handles data: without space prefix', async () 
     mock.restore()
 })
 
-test('OpenClawClient streamPrompt handles partial SSE lines split across chunks', async () => {
+test('AgentHttpClient streamPrompt handles partial SSE lines split across chunks', async () => {
     // Simulate a line split across two chunks
     const encoder = new TextEncoder()
     const stream = new ReadableStream({
@@ -320,7 +320,7 @@ test('OpenClawClient streamPrompt handles partial SSE lines split across chunks'
         } as Response)
     }) as typeof globalThis.fetch
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',
@@ -340,7 +340,7 @@ test('OpenClawClient streamPrompt handles partial SSE lines split across chunks'
     globalThis.fetch = originalFetch
 })
 
-test('OpenClawClient streamPrompt skips malformed JSON lines', async () => {
+test('AgentHttpClient streamPrompt skips malformed JSON lines', async () => {
     const sseLines = [
         'data: {broken json}\n',
         'data: {"choices":[{"delta":{"content":"good"}}]}\n',
@@ -352,7 +352,7 @@ test('OpenClawClient streamPrompt skips malformed JSON lines', async () => {
         stream: sseLines,
     })
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',
@@ -373,7 +373,7 @@ test('OpenClawClient streamPrompt skips malformed JSON lines', async () => {
     mock.restore()
 })
 
-test('OpenClawClient interrupt aborts in-flight request', async () => {
+test('AgentHttpClient interrupt aborts in-flight request', async () => {
     const originalFetch = globalThis.fetch
 
     globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
@@ -387,7 +387,7 @@ test('OpenClawClient interrupt aborts in-flight request', async () => {
         })
     }) as typeof globalThis.fetch
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',
@@ -405,7 +405,7 @@ test('OpenClawClient interrupt aborts in-flight request', async () => {
     globalThis.fetch = originalFetch
 })
 
-test('OpenClawClient uses env vars as defaults', async () => {
+test('AgentHttpClient uses env vars as defaults', async () => {
     const mock = mockFetch({
         status: 200,
         json: { choices: [{ message: { content: 'ok' } }] },
@@ -418,7 +418,7 @@ test('OpenClawClient uses env vars as defaults', async () => {
     process.env.OPENCLAW_AGENT_ID = 'dex'
     process.env.STACKCHAN_DEVICE_ID = 'robot-b'
 
-    const client = new OpenClawClient()
+    const client = new AgentHttpClient()
 
     await client.submitPrompt('test')
 
@@ -440,7 +440,67 @@ test('OpenClawClient uses env vars as defaults', async () => {
     delete process.env.STACKCHAN_DEVICE_ID
 })
 
-test('OpenClawClient dispose aborts in-flight request', async () => {
+test('AgentHttpClient uses Hermes backend profile with X-Hermes-Session-Key header', async () => {
+    const mock = mockFetch({
+        status: 200,
+        json: { choices: [{ message: { content: 'Venus here, ready to hunt.' } }] },
+    })
+
+    const client = new AgentHttpClient({
+        host: '127.0.0.1',
+        port: '8643',
+        apiKey: 'sk-ven-test',
+        model: 'hermes-agent',
+        agentId: 'venus',
+        deviceId: 'device-001',
+        backend: 'hermes',
+    })
+
+    const result = await client.submitPrompt('Who are you?')
+    assert.equal(result, 'Venus here, ready to hunt.')
+
+    assert.equal(mock.calls[0].url, 'http://127.0.0.1:8643/v1/chat/completions')
+
+    const headers = mock.calls[0].init.headers as Record<string, string>
+    assert.equal(headers['Authorization'], 'Bearer sk-ven-test')
+    // Hermes uses X-Hermes-Session-Key, NOT x-openclaw-session-key
+    assert.equal(headers['X-Hermes-Session-Key'], 'venus-stackchan-device-001')
+    assert.equal(headers['x-openclaw-session-key'], undefined)
+
+    const body = JSON.parse(mock.calls[0].init.body as string)
+    assert.equal(body.model, 'hermes-agent')
+
+    mock.restore()
+})
+
+test('AgentHttpClient uses OpenClaw backend profile with x-openclaw-session-key header', async () => {
+    const mock = mockFetch({
+        status: 200,
+        json: { choices: [{ message: { content: 'Rosie here, darling.' } }] },
+    })
+
+    const client = new AgentHttpClient({
+        host: '127.0.0.1',
+        port: '18789',
+        apiKey: 'gw-key',
+        model: 'openclaw/rosie',
+        agentId: 'rosie',
+        deviceId: 'stackchan-core',
+        backend: 'openclaw',
+    })
+
+    const result = await client.submitPrompt('Who are you?')
+    assert.equal(result, 'Rosie here, darling.')
+
+    const headers = mock.calls[0].init.headers as Record<string, string>
+    // OpenClaw uses x-openclaw-session-key, NOT X-Hermes-Session-Key
+    assert.equal(headers['x-openclaw-session-key'], 'agent:rosie:stackchan:stackchan-core')
+    assert.equal(headers['X-Hermes-Session-Key'], undefined)
+
+    mock.restore()
+})
+
+test('AgentHttpClient dispose aborts in-flight request', async () => {
     const originalFetch = globalThis.fetch
 
     globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit) => {
@@ -454,7 +514,7 @@ test('OpenClawClient dispose aborts in-flight request', async () => {
         })
     }) as typeof globalThis.fetch
 
-    const client = new OpenClawClient({
+    const client = new AgentHttpClient({
         host: '127.0.0.1',
         port: '18789',
         apiKey: 'test-key',

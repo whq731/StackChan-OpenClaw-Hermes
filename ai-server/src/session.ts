@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import type WebSocket from 'ws'
 import { createInputOpusDecoder, decodeOpusFrames, encodeWavToOpusFrames, extractOpusPayload, pcmToWav, wrapOpusPayload, INPUT_SAMPLE_RATE, INPUT_FRAME_DURATION_MS, OUTPUT_SAMPLE_RATE, OUTPUT_FRAME_DURATION_MS, type InputOpusDecoder } from './audio.js'
 import { HermesClient, type HermesPromptStreamEvent } from './hermes.js'
-import { OpenClawClient } from './openclaw.js'
+import { AgentHttpClient, BACKEND_PROFILES } from './agent_client.js'
 import type { DeviceBinding } from './device_config.js'
 import { transcribeWithHermes, synthesizeWithHermes } from './hermes_audio.js'
 import { registerDeviceSession, type StackChanBridgeStatus } from './device_control.js'
@@ -482,7 +482,36 @@ export class Session {
         // Falls back to devices.json default, then to env var for backwards compat
         const binding = deps.deviceBinding ?? { backend: (process.env.STACKCHAN_BACKEND ?? 'hermes') as 'openclaw' | 'hermes', agent_id: process.env.STACKCHAN_AGENT_ID ?? 'your-agent' }
         const deviceId = deps.deviceId ?? 'unknown'
-        this.hermes = deps.hermes ?? (binding.backend === 'openclaw' ? new OpenClawClient({ agentId: binding.agent_id, deviceId }) : new HermesClient())
+        // Backend selection: OpenClaw and Hermes both use the OpenAI-compatible HTTP client.
+        // The backend profile (session header name, key format) is resolved from the backend type.
+        // If Hermes env vars (HERMES_HOST/PORT/API_KEY/MODEL) are set, use HTTP to that endpoint.
+        // Otherwise fall back to the HermesClient (dashboard WebSocket transport).
+        // See ADR-001 for rationale and agent_client.ts for backend profile definitions.
+        if (binding.backend === 'openclaw') {
+            this.hermes = deps.hermes ?? new AgentHttpClient({
+                agentId: binding.agent_id,
+                deviceId,
+                backend: 'openclaw',
+                host: process.env.OPENCLAW_HOST,
+                port: process.env.OPENCLAW_PORT,
+                apiKey: process.env.OPENCLAW_API_KEY,
+                model: process.env.OPENCLAW_MODEL,
+            })
+        } else if (process.env.HERMES_HOST || process.env.HERMES_PORT) {
+            // Hermes via dedicated HTTP port (e.g. Venus on 8643) — uses AgentHttpClient with hermes profile
+            this.hermes = deps.hermes ?? new AgentHttpClient({
+                agentId: binding.agent_id,
+                deviceId,
+                backend: 'hermes',
+                host: process.env.HERMES_HOST,
+                port: process.env.HERMES_PORT,
+                apiKey: process.env.HERMES_API_KEY,
+                model: process.env.HERMES_MODEL ?? 'hermes-agent',
+            })
+        } else {
+            // Hermes via dashboard WebSocket (legacy/default transport)
+            this.hermes = deps.hermes ?? new HermesClient()
+        }
         this.decodeOpusFramesFn = deps.decodeOpusFrames ?? decodeOpusFrames
         this.createInputOpusDecoderFn = deps.createInputOpusDecoder ?? createInputOpusDecoder
         this.decodeOpusFrameFn = deps.decodeOpusFrame

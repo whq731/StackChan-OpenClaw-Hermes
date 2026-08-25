@@ -235,6 +235,68 @@ document.getElementById('localBtn').addEventListener('click', saveLocal);
 document.getElementById('loadBtn2').addEventListener('click', loadFromRobot);
 document.getElementById('pushBtn2').addEventListener('click', saveAndPush);
 
+// ---- Live Controls: Volume ----
+const volumeSlider = document.getElementById('volume');
+const volumeVal = document.getElementById('volumeVal');
+
+function updateVolumeFill() {
+  const v = Number(volumeSlider.value);
+  volumeVal.textContent = v + '%';
+  volumeSlider.style.setProperty('--fill', v + '%');
+}
+volumeSlider.addEventListener('input', updateVolumeFill);
+updateVolumeFill();
+
+// Restore saved volume
+const savedVol = localStorage.getItem('stackchan.volume');
+if (savedVol !== null) {
+  volumeSlider.value = savedVol;
+  updateVolumeFill();
+}
+
+async function applyVolume() {
+  const ip = getRobotIp();
+  if (!ip) { showError('Enter the robot IP address first'); return; }
+  const volume = Number(volumeSlider.value);
+  showStatus('Setting volume to ' + volume + '%...');
+  try {
+    const res = await fetch('/api/volume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ robotIp: ip, volume }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || ('HTTP ' + res.status));
+    localStorage.setItem('stackchan.volume', String(volume));
+    showStatus('Volume set to ' + volume + '% ✓');
+  } catch (e) {
+    showError('Volume failed: ' + e.message);
+  }
+}
+
+document.getElementById('volumeBtn').addEventListener('click', applyVolume);
+
+// ---- Live Controls: Test Tone ----
+async function playTone() {
+  const ip = getRobotIp();
+  if (!ip) { showError('Enter the robot IP address first'); return; }
+  showStatus('Playing test tone...');
+  try {
+    const res = await fetch('/api/tone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ robotIp: ip }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || ('HTTP ' + res.status));
+    showStatus('Test tone played ✓');
+  } catch (e) {
+    showError('Tone failed: ' + e.message);
+  }
+}
+
+document.getElementById('toneBtn').addEventListener('click', playTone);
+
 // Try loading local config on startup
 fetch('/api/config_local')
   .then(res => res.json())

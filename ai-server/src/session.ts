@@ -259,7 +259,7 @@ const AUTO_LED_CONFIG = readAutoLedConfig()
 const MAX_SPEECH_TEXT_CHARS = SPEECH_SEGMENTATION_CONFIG.maxSpeechChars
 const MCP_REQUEST_TIMEOUT_MS = 10_000
 const PROCESSING_KEEPALIVE_MS = 10_000
-const PROCESS_ERROR_SPEECH = '返答処理でエラーが起きました。設定とサーバーログを確認してください。'
+const PROCESS_ERROR_SPEECH = (process.env.STACKCHAN_ERROR_SPEECH ?? 'Sorry, darling, something went wrong. Please try again.').trim() || 'Sorry, darling, something went wrong. Please try again.'
 const PROCESS_ERROR_ALERT_MAX_CHARS = 120
 const AUTO_RESUME_LISTENING = readEnvBool('STACKCHAN_AUTO_RESUME_LISTENING', true)
 const IGNORE_SHORT_TRANSCRIPTS = readEnvBool('STACKCHAN_IGNORE_SHORT_TRANSCRIPTS', true)
@@ -268,6 +268,8 @@ const FAST_ACK_ENABLED = readEnvBool('STACKCHAN_FAST_ACK_ENABLED', false)
 const FAST_ACK_TEXT = (process.env.STACKCHAN_FAST_ACK_TEXT ?? 'はい。').trim() || 'はい。'
 const FAST_ACK_TEXTS = readFastAckTexts()
 const STOP_LLM_AFTER_MAX_SPOKEN_SEGMENTS = readEnvBool('STACKCHAN_STOP_LLM_AFTER_MAX_SPOKEN_SEGMENTS', true)
+const STANDBY_PHRASES = (process.env.STACKCHAN_STANDBY_PHRASES ?? 'standby,go to sleep,stop listening,sleep,quiet').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+const STANDBY_ACK_TEXT = (process.env.STACKCHAN_STANDBY_ACK_TEXT ?? 'Going quiet, darling.').trim() || 'Going quiet, darling.'
 const MAX_DURATION_STT_RMS_THRESHOLD = readEnvFloat('STACKCHAN_MAX_DURATION_STT_RMS_THRESHOLD', 0.006, 0, 0.2)
 const BOOT_VOLUME = readEnvInt('STACKCHAN_BOOT_VOLUME', 0, 0, 100, process.env)
 const STREAMING_DECODE_FAILURE_LIMIT = readEnvInt('STACKCHAN_STREAMING_DECODE_FAILURE_LIMIT', 3, 1, 20)
@@ -300,7 +302,7 @@ function readFastAckTexts(): string[] {
 function stackChanVoicePrompt(prompt: string): string {
     const prefix = process.env.STACKCHAN_REPLY_PROMPT_PREFIX?.trim()
     if (!prefix) return prompt
-    return `${prefix}\nユーザー: ${prompt}`
+    return `${prefix}\nUser: ${prompt}`
 }
 
 function normalizedShortTranscript(text: string): string {
@@ -334,11 +336,26 @@ function isMissingSttProviderError(message: string): boolean {
     return /No STT provider available/i.test(message)
 }
 
+function isStandbyPhrase(text: string): boolean {
+    if (STANDBY_PHRASES.length === 0) return false
+    // Normalize: lowercase, strip punctuation/whitespace, and collapse common
+    // STT variants of "rosie" (rosy, rosi, rosie) so a one-letter mishearing
+    // doesn't break the standby trigger.
+    const normalized = text.trim().toLowerCase()
+        .replace(/[、。！？!?.,，:;"'“”‘’()\[\]\s]/g, '')
+        .replace(/rosy|rosi/g, 'rosie')
+    if (!normalized) return false
+    return STANDBY_PHRASES.some(phrase => {
+        const p = phrase.replace(/[\s]/g, '').replace(/rosy|rosi/g, 'rosie')
+        return p.length > 0 && normalized.includes(p)
+    })
+}
+
 function compactErrorForBubble(error: unknown): string {
     const raw = error instanceof Error ? error.message : String(error)
     const compact = raw.replace(/\s+/g, ' ').trim()
     if (!compact) return 'unknown error'
-    if (isMissingSttProviderError(compact)) return 'STT設定がありません。サーバー設定を確認してください。'
+    if (isMissingSttProviderError(compact)) return 'STT server is not configured. Please check server settings.'
     if (compact.length <= PROCESS_ERROR_ALERT_MAX_CHARS) return compact
     return `${compact.slice(0, PROCESS_ERROR_ALERT_MAX_CHARS - 3)}...`
 }
@@ -826,6 +843,7 @@ export class Session {
             if (BOOT_VOLUME > 0) {
                 void this.callRobotToolInternal('self.audio_speaker.set_volume', {
                     volume: BOOT_VOLUME,
+                    permanent: true,
                 }, { automatic: true, waitForResponse: true }).then(() => {
                     console.log(`[session ${this.sessionId}] boot volume set to ${BOOT_VOLUME}`)
                 }).catch(err => {
@@ -935,6 +953,21 @@ export class Session {
         }
 
         this.sendJson({ type: 'stt', text })
+
+        // Standby phrase: stop listening and go quiet until the next wake word.
+        if (isStandbyPhrase(text)) {
+            console.log(`[session ${this.sessionId}] standby phrase detected: "${text}"`)
+            this.state = 'idle'
+            this.setAutoLedState('idle')
+            this.clearTimers()
+            this.resetCapture()
+            this.followupQueue = []
+            await this.speakSegments([STANDBY_ACK_TEXT], 'tts.standby').catch((error) => {
+                console.error(`[session ${this.sessionId}] standby ack speech failed:`, error)
+            })
+            return
+        }
+
         await this.trySpeakFastAck()
 
         // 2. Hermes LLM turn -> 3. Hermes TTS -> Opus -> device
@@ -1308,7 +1341,13 @@ export class Session {
         const leadSilenceMs = playback.localOutputTarget
             ? 0
             : (index === 0 && playback.streamedFrames === 0 ? TTS_PREROLL_MS : 0)
-        const audio = framesPromise ? await framesPromise : await this.synthesizeSegment(segment, label, leadSilenceMs)
+        let audio: SynthesizedSegment
+        try {
+            audio = framesPromise ? await framesPromise : await this.synthesizeSegment(segment, label, leadSilenceMs)
+        } catch (synthErr) {
+            console.error(`[session ${this.sessionId}] TTS synthesis failed for segment ${index}, skipping:`, synthErr)
+            return
+        }
         onFramesReady?.()
         const localPlayback = this.startLocalSegmentPlayback(playback, audio.wav)
         const leadSilenceFrames = Math.ceil(leadSilenceMs / OUTPUT_FRAME_DURATION_MS)

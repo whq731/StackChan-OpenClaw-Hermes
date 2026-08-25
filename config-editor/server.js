@@ -106,6 +106,68 @@ app.post('/api/config_local', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Live Controls: Volume & Tone ----
+// These proxy to the ai-server control API (port 8766) which talks to the robot.
+const CONTROL_PORT = process.env.STACKCHAN_CONTROL_PORT || 8766;
+const CONTROL_HOST = process.env.STACKCHAN_CONTROL_HOST || '127.0.0.1';
+
+function callControlTool(name, args) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({ name, args });
+    const options = {
+      hostname: CONTROL_HOST,
+      port: CONTROL_PORT,
+      path: '/tools/call',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+      timeout: 10000,
+    };
+    const req = http.request(options, (proxyRes) => {
+      let data = '';
+      proxyRes.on('data', c => data += c);
+      proxyRes.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch { reject(new Error('Invalid response from control server')); }
+      });
+    });
+    req.on('error', e => reject(new Error('Cannot reach ai-server control (' + CONTROL_HOST + ':' + CONTROL_PORT + '): ' + e.message)));
+    req.on('timeout', () => { req.destroy(); reject(new Error('ai-server control timed out')); });
+    req.write(body);
+    req.end();
+  });
+}
+
+app.post('/api/volume', async (req, res) => {
+  const volume = Number(req.body.volume);
+  if (!Number.isFinite(volume) || volume < 0 || volume > 100) {
+    return res.status(400).json({ error: 'volume must be 0-100' });
+  }
+  try {
+    const result = await callControlTool('stackchan_set_speaker_volume', { volume: Math.round(volume), permanent: true });
+    if (result && result.success === false) {
+      return res.status(502).json({ error: result.error || 'Robot rejected volume change' });
+    }
+    res.json({ ok: true, result });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+app.post('/api/tone', async (req, res) => {
+  try {
+    const result = await callControlTool('stackchan_play_test_tone', { frequency_hz: 440, duration_ms: 500, amplitude: 6000 });
+    if (result && result.success === false) {
+      return res.status(502).json({ error: result.error || 'Robot rejected tone' });
+    }
+    res.json({ ok: true, result });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
 // Load locally
 app.get('/api/config_local', (req, res) => {
   try {

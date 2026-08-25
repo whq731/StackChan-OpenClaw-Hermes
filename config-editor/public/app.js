@@ -2,14 +2,6 @@
 
 const statusDiv = document.getElementById('status');
 const errorDiv = document.getElementById('error');
-const robotIpInput = document.getElementById('robotIp');
-const backendSelect = document.getElementById('backend');
-const openclawSection = document.getElementById('openclawSection');
-const hermesSection = document.getElementById('hermesSection');
-
-// Restore robot IP from localStorage
-const savedIp = localStorage.getItem('stackchan.robotIp');
-if (savedIp) robotIpInput.value = savedIp;
 
 function showStatus(msg) {
   statusDiv.textContent = msg;
@@ -20,69 +12,44 @@ function showError(msg) {
   statusDiv.textContent = '';
 }
 
-function getRobotIp() {
-  const ip = robotIpInput.value.trim();
-  if (ip) localStorage.setItem('stackchan.robotIp', ip);
-  return ip;
-}
-
-// Toggle sections based on backend
-function updateBackendVisibility() {
-  const backend = backendSelect.value;
-  if (backend === '1') {
-    openclawSection.classList.add('dim');
-    hermesSection.classList.remove('dim');
-  } else {
-    openclawSection.classList.remove('dim');
-    hermesSection.classList.add('dim');
-  }
-}
-backendSelect.addEventListener('change', updateBackendVisibility);
-updateBackendVisibility();
-
-// Collect all form fields into a config object
+// Collect all form fields into a flat env config object
 function collectConfig() {
-  const config = {
-    backend: parseInt(backendSelect.value),
-    openclaw: {
-      host: val('oc_host'),
-      port: parseInt(val('oc_port')) || 18789,
-      model: val('oc_model'),
-      agent_id: val('oc_agent_id'),
-      bot_token: val('oc_bot_token'),
-      default_model: val('oc_default_model'),
-    },
-    hermes: {
-      host: val('hm_host'),
-      port: parseInt(val('hm_port')) || 0,
-      model: val('hm_model'),
-      agent_id: val('hm_agent_id'),
-      bot_token: val('hm_bot_token'),
-      default_model: val('hm_default_model'),
-    },
-    llm: {
-      type: parseInt(val('llm_type')),
-      model: val('llm_model'),
-      enableMemory: val('llm_enableMemory') === 'true',
-    },
-    tts: {
-      type: parseInt(val('tts_type')),
-      model: val('tts_model'),
-      voice: val('tts_voice'),
-    },
-    stt: {
-      type: parseInt(val('stt_type')),
-      model: val('stt_model'),
-    },
-    wakeword: {
-      type: parseInt(val('ww_type')),
-      keyword: val('ww_keyword'),
-    },
-    moduleLLM: {
-      rxPin: parseInt(val('mod_rxPin')) || 13,
-      txPin: parseInt(val('mod_txPin')) || 14,
-    },
-  };
+  const config = {};
+  // Backend
+  const backend = document.getElementById('backend').value;
+  config['STACKCHAN_BACKEND'] = backend === '1' ? 'hermes' : 'openclaw';
+  // OpenClaw
+  config['OPENCLAW_HOST'] = val('oc_host');
+  config['OPENCLAW_PORT'] = val('oc_port') || '18789';
+  config['OPENCLAW_MODEL'] = val('oc_model');
+  config['OPENCLAW_AGENT_ID'] = val('oc_agent_id');
+  config['OPENCLAW_API_KEY'] = val('oc_api_key');
+  // TTS
+  config['STACKCHAN_LOCAL_TTS_URL'] = val('tts_url');
+  // STT
+  config['HERMES_STT_URL'] = val('stt_url');
+  config['HERMES_STT_MODEL'] = val('stt_model');
+  // VAD
+  config['STACKCHAN_VAD_RMS_THRESHOLD'] = val('vad_rms');
+  config['STACKCHAN_VAD_START_SPEECH_MS'] = val('vad_start');
+  config['STACKCHAN_VAD_END_SILENCE_MS'] = val('vad_end');
+  config['STACKCHAN_VAD_MIN_SPEECH_MS'] = val('vad_min');
+  // Fast ack
+  config['STACKCHAN_FAST_ACK_ENABLED'] = document.getElementById('fast_ack').checked ? 'true' : 'false';
+  config['STACKCHAN_FAST_ACK_TEXT'] = val('fast_ack_text');
+  // Standby
+  config['STACKCHAN_STANDBY_PHRASES'] = val('standby_phrases');
+  config['STACKCHAN_STANDBY_ACK_TEXT'] = val('standby_ack');
+  // TTS streaming
+  config['STACKCHAN_MAX_SPEECH_CHARS'] = val('max_chars');
+  config['STACKCHAN_TTS_SEGMENT_MAX_CHARS'] = val('seg_chars');
+  config['STACKCHAN_TTS_OUTPUT_GAIN'] = val('tts_gain');
+  // Behaviour
+  config['STACKCHAN_AUTO_RESUME_LISTENING'] = document.getElementById('auto_resume').checked ? 'true' : 'false';
+  config['STACKCHAN_AUTO_LED_ENABLED'] = document.getElementById('auto_led').checked ? 'true' : 'false';
+  config['STACKCHAN_BOOT_VOLUME'] = val('boot_volume');
+  // Reply prefix
+  config['STACKCHAN_REPLY_PROMPT_PREFIX'] = val('reply_prefix');
   return config;
 }
 
@@ -94,146 +61,108 @@ function val(id) {
 function setVal(id, value) {
   const el = document.getElementById(id);
   if (el && value !== undefined && value !== null) {
-    el.value = typeof value === 'number' ? String(value) : value;
+    el.value = value;
   }
 }
 
-// Populate form from config object
+// Populate form from flat env config object
 function populateConfig(config) {
   if (!config) return;
-  
-  setVal('backend', config.backend || 0);
-  backendSelect.value = String(config.backend || 0);
-  
-  if (config.openclaw) {
-    setVal('oc_host', config.openclaw.host);
-    setVal('oc_port', config.openclaw.port);
-    setVal('oc_model', config.openclaw.model);
-    setVal('oc_agent_id', config.openclaw.agent_id);
-    setVal('oc_bot_token', config.openclaw.bot_token);
-    setVal('oc_default_model', config.openclaw.default_model);
-  }
-  
-  if (config.hermes) {
-    setVal('hm_host', config.hermes.host);
-    setVal('hm_port', config.hermes.port);
-    setVal('hm_model', config.hermes.model);
-    setVal('hm_agent_id', config.hermes.agent_id);
-    setVal('hm_bot_token', config.hermes.bot_token);
-    setVal('hm_default_model', config.hermes.default_model);
-  }
-  
-  if (config.llm) {
-    setVal('llm_type', config.llm.type);
-    setVal('llm_model', config.llm.model);
-    setVal('llm_enableMemory', String(config.llm.enableMemory));
-  }
-  
-  if (config.tts) {
-    setVal('tts_type', config.tts.type);
-    setVal('tts_model', config.tts.model);
-    setVal('tts_voice', config.tts.voice);
-  }
-  
-  if (config.stt) {
-    setVal('stt_type', config.stt.type);
-    setVal('stt_model', config.stt.model);
-  }
-  
-  if (config.wakeword) {
-    setVal('ww_type', config.wakeword.type);
-    setVal('ww_keyword', config.wakeword.keyword);
-  }
-  
-  if (config.moduleLLM) {
-    setVal('mod_rxPin', config.moduleLLM.rxPin);
-    setVal('mod_txPin', config.moduleLLM.txPin);
-  }
-  
-  updateBackendVisibility();
+  // Backend
+  const backend = config['STACKCHAN_BACKEND'] || 'openclaw';
+  document.getElementById('backend').value = backend === 'hermes' ? '1' : '0';
+  // OpenClaw
+  setVal('oc_host', config['OPENCLAW_HOST'] || '127.0.0.1');
+  setVal('oc_port', config['OPENCLAW_PORT'] || '18789');
+  setVal('oc_model', config['OPENCLAW_MODEL'] || '');
+  setVal('oc_agent_id', config['OPENCLAW_AGENT_ID'] || '');
+  setVal('oc_api_key', config['OPENCLAW_API_KEY'] || '');
+  // TTS
+  setVal('tts_url', config['STACKCHAN_LOCAL_TTS_URL'] || '');
+  // STT
+  setVal('stt_url', config['HERMES_STT_URL'] || '');
+  setVal('stt_model', config['HERMES_STT_MODEL'] || 'whisper-1');
+  // VAD
+  setVal('vad_rms', config['STACKCHAN_VAD_RMS_THRESHOLD'] || '0.045');
+  setVal('vad_start', config['STACKCHAN_VAD_START_SPEECH_MS'] || '180');
+  setVal('vad_end', config['STACKCHAN_VAD_END_SILENCE_MS'] || '800');
+  setVal('vad_min', config['STACKCHAN_VAD_MIN_SPEECH_MS'] || '150');
+  // Fast ack
+  document.getElementById('fast_ack').checked = config['STACKCHAN_FAST_ACK_ENABLED'] === 'true';
+  setVal('fast_ack_text', config['STACKCHAN_FAST_ACK_TEXT'] || 'Yes, darling?');
+  // Standby
+  setVal('standby_phrases', config['STACKCHAN_STANDBY_PHRASES'] || 'quiet rosie');
+  setVal('standby_ack', config['STACKCHAN_STANDBY_ACK_TEXT'] || 'Going quiet, darling.');
+  // TTS streaming
+  setVal('max_chars', config['STACKCHAN_MAX_SPEECH_CHARS'] || '800');
+  setVal('seg_chars', config['STACKCHAN_TTS_SEGMENT_MAX_CHARS'] || '120');
+  setVal('tts_gain', config['STACKCHAN_TTS_OUTPUT_GAIN'] || '0.65');
+  // Behaviour
+  document.getElementById('auto_resume').checked = config['STACKCHAN_AUTO_RESUME_LISTENING'] === 'true';
+  document.getElementById('auto_led').checked = config['STACKCHAN_AUTO_LED_ENABLED'] === 'true';
+  setVal('boot_volume', config['STACKCHAN_BOOT_VOLUME'] || '70');
+  // Reply prefix
+  setVal('reply_prefix', config['STACKCHAN_REPLY_PROMPT_PREFIX'] || '');
 }
 
-// Load from robot
-async function loadFromRobot() {
-  const ip = getRobotIp();
-  if (!ip) {
-    showError('Enter the robot IP address first');
-    return;
-  }
-  
-  showStatus('Loading from robot...');
+// Load from .env (on the Mac, via config-editor API)
+async function loadFromEnv() {
+  showStatus('Loading from .env...');
   try {
-    const res = await fetch(`/api/config?robotIp=${encodeURIComponent(ip)}`);
+    const res = await fetch('/api/config');
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.error || `HTTP ${res.status}`);
     }
-    const config = await res.json();
-    populateConfig(config);
-    showStatus('Config loaded from robot ✓');
+    const data = await res.json();
+    populateConfig(data.config);
+    showStatus('Config loaded from .env ✓');
   } catch (e) {
     showError('Load failed: ' + e.message);
   }
 }
 
-// Save & push to robot
-async function saveAndPush() {
-  const ip = getRobotIp();
-  if (!ip) {
-    showError('Enter the robot IP address first');
-    return;
-  }
-  
+// Save to .env
+async function saveToEnv() {
   const config = collectConfig();
-  showStatus('Pushing to robot...');
-  
+  showStatus('Saving to .env...');
   try {
     const res = await fetch('/api/config_set', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ robotIp: ip, config }),
+      body: JSON.stringify({ config }),
     });
-    
     const result = await res.json();
-    
-    if (!res.ok) {
-      if (result.localSaved) {
-        showStatus('Saved locally (robot unreachable). Will sync next time.');
-      } else {
-        throw new Error(result.error || `HTTP ${res.status}`);
-      }
-    } else {
-      showStatus('Config pushed to robot ✓ & saved locally ✓');
-    }
+    if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+    showStatus('Saved to .env ✓ — click "Restart ai-server" to apply changes');
   } catch (e) {
-    showError('Push failed: ' + e.message);
+    showError('Save failed: ' + e.message);
   }
 }
 
-// Save local only
-async function saveLocal() {
-  const config = collectConfig();
-  
+// Restart ai-server
+async function restartServer() {
+  showStatus('Restarting ai-server...');
   try {
-    const res = await fetch('/api/config_local', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ config }),
-    });
-    
-    if (!res.ok) throw new Error('Save failed');
-    showStatus('Saved locally ✓');
+    const res = await fetch('/api/restart', { method: 'POST' });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || `HTTP ${res.status}`);
+    if (result.ok) {
+      showStatus('ai-server restarted ✓ (PID ' + result.pid + ')');
+    } else {
+      showStatus(result.message || 'Restart attempted — check logs');
+    }
   } catch (e) {
-    showError('Local save failed: ' + e.message);
+    showError('Restart failed: ' + e.message);
   }
 }
 
 // Wire up buttons
-document.getElementById('loadBtn').addEventListener('click', loadFromRobot);
-document.getElementById('pushBtn').addEventListener('click', saveAndPush);
-document.getElementById('localBtn').addEventListener('click', saveLocal);
-document.getElementById('loadBtn2').addEventListener('click', loadFromRobot);
-document.getElementById('pushBtn2').addEventListener('click', saveAndPush);
+document.getElementById('loadBtn').addEventListener('click', loadFromEnv);
+document.getElementById('saveBtn').addEventListener('click', saveToEnv);
+document.getElementById('restartBtn').addEventListener('click', restartServer);
+document.getElementById('saveBtn2').addEventListener('click', saveToEnv);
+document.getElementById('restartBtn2').addEventListener('click', restartServer);
 
 // ---- Live Controls: Volume ----
 const volumeSlider = document.getElementById('volume');
@@ -245,30 +174,27 @@ function updateVolumeFill() {
   volumeSlider.style.setProperty('--fill', v + '%');
 }
 volumeSlider.addEventListener('input', updateVolumeFill);
-updateVolumeFill();
 
-// Restore saved volume
-const savedVol = localStorage.getItem('stackchan.volume');
-if (savedVol !== null) {
-  volumeSlider.value = savedVol;
+// Sync volume slider with boot_volume field
+const bootVolumeInput = document.getElementById('boot_volume');
+bootVolumeInput.addEventListener('input', () => {
+  volumeSlider.value = bootVolumeInput.value;
   updateVolumeFill();
-}
+});
 
 async function applyVolume() {
-  const ip = getRobotIp();
-  if (!ip) { showError('Enter the robot IP address first'); return; }
   const volume = Number(volumeSlider.value);
   showStatus('Setting volume to ' + volume + '%...');
   try {
     const res = await fetch('/api/volume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ robotIp: ip, volume }),
+      body: JSON.stringify({ volume }),
     });
     const result = await res.json();
     if (!res.ok) throw new Error(result.error || ('HTTP ' + res.status));
-    localStorage.setItem('stackchan.volume', String(volume));
-    showStatus('Volume set to ' + volume + '% ✓');
+    bootVolumeInput.value = String(volume);
+    showStatus('Volume set to ' + volume + '% ✓ (also saved as boot volume)');
   } catch (e) {
     showError('Volume failed: ' + e.message);
   }
@@ -278,14 +204,12 @@ document.getElementById('volumeBtn').addEventListener('click', applyVolume);
 
 // ---- Live Controls: Test Tone ----
 async function playTone() {
-  const ip = getRobotIp();
-  if (!ip) { showError('Enter the robot IP address first'); return; }
   showStatus('Playing test tone...');
   try {
     const res = await fetch('/api/tone', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ robotIp: ip }),
+      body: JSON.stringify({}),
     });
     const result = await res.json();
     if (!res.ok) throw new Error(result.error || ('HTTP ' + res.status));
@@ -297,12 +221,5 @@ async function playTone() {
 
 document.getElementById('toneBtn').addEventListener('click', playTone);
 
-// Try loading local config on startup
-fetch('/api/config_local')
-  .then(res => res.json())
-  .then(data => {
-    if (data.yaml) {
-      showStatus('Loaded saved config from disk. Click "Load from Robot" to sync.');
-    }
-  })
-  .catch(() => {});
+// Load config on startup
+loadFromEnv();

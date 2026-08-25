@@ -13,41 +13,37 @@
       <div class="logo">🤖</div>
       <div>
         <h1>Stack-chan Control</h1>
-        <p>Robot config &amp; live controls</p>
+        <p>Config &amp; live controls — powered by .env</p>
       </div>
     </header>
 
-    <!-- Connection -->
-    <div class="card">
-      <h2><span class="dot"></span>Connection</h2>
-      <div class="grid">
-        <div class="full">
-          <label for="robotIp">Robot IP Address</label>
-          <input type="text" id="robotIp" placeholder="192.168.2.xxx" class="ip-input" autocomplete="off">
-        </div>
-      </div>
-      <div class="btn-row">
-        <button id="loadBtn" class="btn-primary">Load from Robot</button>
-        <button id="pushBtn" class="btn-primary">Save &amp; Push</button>
-        <button id="localBtn" class="btn-secondary">Save Local</button>
-      </div>
-      <div id="status"></div>
-      <div id="error"></div>
-    </div>
+    <!-- Status -->
+    <div id="status"></div>
+    <div id="error"></div>
 
     <!-- Live Controls -->
     <div class="card">
       <h2><span class="dot"></span>Live Controls</h2>
-      <label for="volume">Speaker Volume</label>
+      <label for="volume">Speaker Volume <strong id="volumeVal">70%</strong></label>
       <div class="volume-row">
         <input type="range" id="volume" min="0" max="100" value="70">
-        <span class="volume-val" id="volumeVal">70%</span>
       </div>
-      <div class="volume-hint">Applies instantly to the connected robot. Also saved as the boot volume.</div>
+      <div class="volume-hint">Applies instantly to the connected robot. Also saved as boot volume in .env.</div>
       <div class="btn-row">
         <button id="volumeBtn" class="btn-primary">Apply Volume</button>
         <button id="toneBtn" class="btn-secondary">Test Tone</button>
       </div>
+    </div>
+
+    <!-- Config Actions -->
+    <div class="card">
+      <h2><span class="dot"></span>Config</h2>
+      <div class="btn-row">
+        <button id="loadBtn" class="btn-secondary">Load from .env</button>
+        <button id="saveBtn" class="btn-primary">Save to .env</button>
+        <button id="restartBtn" class="btn-danger">Restart ai-server</button>
+      </div>
+      <div class="hint">Load reads current .env values. Save writes changes. Restart applies them.</div>
     </div>
 
     <!-- Backend -->
@@ -61,190 +57,133 @@
             <option value="1">Hermes</option>
           </select>
         </div>
-      </div>
-    </div>
-
-    <!-- Agent Profile -->
-    <div class="card">
-      <h2><span class="dot"></span>Agent Profile</h2>
-      <div class="grid">
         <div>
-          <label for="oc_agent_id">Agent ID</label>
-          <input type="text" id="oc_agent_id" placeholder="your-agent" data-config="openclaw.agent_id">
-        </div>
-        <div>
-          <label for="oc_default_model">Default Model</label>
-          <input type="text" id="oc_default_model" placeholder="openclaw/your-agent" data-config="openclaw.default_model">
-        </div>
-        <div class="full">
-          <label for="oc_bot_token">Bot Token</label>
-          <input type="password" id="oc_bot_token" placeholder="Telegram bot token" data-config="openclaw.bot_token">
-        </div>
-      </div>
-    </div>
-
-    <!-- OpenClaw -->
-    <div class="card" id="openclawSection">
-      <h2><span class="dot"></span>OpenClaw</h2>
-      <div class="grid">
-        <div>
-          <label for="oc_host">Host IP</label>
-          <input type="text" id="oc_host" placeholder="&lt;your-server-ip&gt;" data-config="openclaw.host">
+          <label for="oc_host">OpenClaw Host</label>
+          <input type="text" id="oc_host" placeholder="127.0.0.1">
         </div>
         <div>
           <label for="oc_port">Port</label>
-          <input type="number" id="oc_port" placeholder="18789" data-config="openclaw.port">
+          <input type="number" id="oc_port" placeholder="18789">
+        </div>
+        <div>
+          <label for="oc_model">Model</label>
+          <input type="text" id="oc_model" placeholder="openclaw/rosie">
+        </div>
+        <div>
+          <label for="oc_agent_id">Agent ID</label>
+          <input type="text" id="oc_agent_id" placeholder="rosie">
         </div>
         <div class="full">
-          <label for="oc_model">Model</label>
-          <input type="text" id="oc_model" placeholder="openclaw/your-agent" data-config="openclaw.model">
+          <label for="oc_api_key">API Key</label>
+          <input type="password" id="oc_api_key" placeholder="API key">
         </div>
       </div>
     </div>
 
-    <!-- Hermes -->
-    <div class="card" id="hermesSection">
-      <h2><span class="dot"></span>Hermes</h2>
-      <div class="grid">
-        <div>
-          <label for="hm_host">Host IP</label>
-          <input type="text" id="hm_host" data-config="hermes.host">
-        </div>
-        <div>
-          <label for="hm_port">Port</label>
-          <input type="number" id="hm_port" data-config="hermes.port">
-        </div>
-        <div>
-          <label for="hm_model">Model</label>
-          <input type="text" id="hm_model" data-config="hermes.model">
-        </div>
-        <div>
-          <label for="hm_agent_id">Agent ID</label>
-          <input type="text" id="hm_agent_id" data-config="hermes.agent_id">
-        </div>
-        <div>
-          <label for="hm_default_model">Default Model</label>
-          <input type="text" id="hm_default_model" data-config="hermes.default_model">
-        </div>
-        <div>
-          <label for="hm_bot_token">Bot Token</label>
-          <input type="password" id="hm_bot_token" data-config="hermes.bot_token">
-        </div>
-      </div>
-    </div>
-
-    <!-- LLM -->
+    <!-- Voice Pipeline -->
     <div class="card">
-      <h2><span class="dot"></span>LLM</h2>
+      <h2><span class="dot"></span>STT / TTS Servers</h2>
       <div class="grid">
-        <div>
-          <label for="llm_type">Type</label>
-          <select id="llm_type" data-config="llm.type">
-            <option value="0">ChatGPT</option>
-            <option value="1">ModuleLLM</option>
-            <option value="2">ModuleLLM (FnCl)</option>
-            <option value="3">Gemini</option>
-            <option value="4" selected>OpenClaw</option>
-          </select>
+        <div class="full">
+          <label for="stt_url">STT URL</label>
+          <input type="text" id="stt_url" placeholder="http://127.0.0.1:52626/v1/audio/transcriptions">
         </div>
         <div>
-          <label for="llm_model">Model</label>
-          <input type="text" id="llm_model" data-config="llm.model">
+          <label for="stt_model">STT Model</label>
+          <input type="text" id="stt_model" placeholder="whisper-1">
         </div>
-        <div>
-          <label for="llm_enableMemory">Enable Memory</label>
-          <select id="llm_enableMemory" data-config="llm.enableMemory">
-            <option value="false">No</option>
-            <option value="true">Yes</option>
-          </select>
+        <div class="full">
+          <label for="tts_url">TTS URL</label>
+          <input type="text" id="tts_url" placeholder="http://127.0.0.1:18002/">
         </div>
       </div>
     </div>
 
-    <!-- TTS -->
+    <!-- VAD -->
     <div class="card">
-      <h2><span class="dot"></span>TTS</h2>
+      <h2><span class="dot"></span>VAD Settings</h2>
       <div class="grid">
         <div>
-          <label for="tts_type">Type</label>
-          <select id="tts_type" data-config="tts.type">
-            <option value="0">VoiceVox</option>
-            <option value="1">ElevenLabs</option>
-            <option value="2">OpenAI TTS</option>
-            <option value="3">AquesTalk</option>
-            <option value="4">ModuleLLM</option>
-          </select>
+          <label for="vad_rms">RMS Threshold</label>
+          <input type="text" id="vad_rms" placeholder="0.045">
         </div>
         <div>
-          <label for="tts_model">Model</label>
-          <input type="text" id="tts_model" data-config="tts.model">
+          <label for="vad_start">Start Speech (ms)</label>
+          <input type="number" id="vad_start" placeholder="180">
         </div>
         <div>
-          <label for="tts_voice">Voice</label>
-          <input type="text" id="tts_voice" data-config="tts.voice">
+          <label for="vad_end">End Silence (ms)</label>
+          <input type="number" id="vad_end" placeholder="800">
+        </div>
+        <div>
+          <label for="vad_min">Min Speech (ms)</label>
+          <input type="number" id="vad_min" placeholder="150">
         </div>
       </div>
     </div>
 
-    <!-- STT -->
+    <!-- Behaviour -->
     <div class="card">
-      <h2><span class="dot"></span>STT</h2>
+      <h2><span class="dot"></span>Behaviour</h2>
       <div class="grid">
         <div>
-          <label for="stt_type">Type</label>
-          <select id="stt_type" data-config="stt.type">
-            <option value="0">Google</option>
-            <option value="1" selected>Groq Whisper</option>
-            <option value="2">ModuleLLM ASR</option>
-            <option value="3">ModuleLLM Whisper</option>
-          </select>
+          <label for="fast_ack_text">Fast Ack Text</label>
+          <input type="text" id="fast_ack_text" placeholder="Yes, darling?">
         </div>
         <div>
-          <label for="stt_model">Model</label>
-          <input type="text" id="stt_model" data-config="stt.model">
+          <label for="standby_phrases">Standby Phrases (comma)</label>
+          <input type="text" id="standby_phrases" placeholder="quiet rosie">
+        </div>
+        <div>
+          <label for="standby_ack">Standby Ack Text</label>
+          <input type="text" id="standby_ack" placeholder="Going quiet, darling.">
+        </div>
+        <div>
+          <label for="boot_volume">Boot Volume</label>
+          <input type="number" id="boot_volume" min="0" max="100" placeholder="70">
+        </div>
+        <div>
+          <label for="max_chars">Max Speech Chars</label>
+          <input type="number" id="max_chars" placeholder="800">
+        </div>
+        <div>
+          <label for="seg_chars">Segment Max Chars</label>
+          <input type="number" id="seg_chars" placeholder="120">
+        </div>
+        <div>
+          <label for="tts_gain">TTS Output Gain</label>
+          <input type="text" id="tts_gain" placeholder="0.65">
+        </div>
+        <div class="checkbox-row">
+          <label><input type="checkbox" id="fast_ack"> Fast Ack Enabled</label>
+        </div>
+        <div class="checkbox-row">
+          <label><input type="checkbox" id="auto_resume"> Auto Resume Listening</label>
+        </div>
+        <div class="checkbox-row">
+          <label><input type="checkbox" id="auto_led"> Auto LED</label>
         </div>
       </div>
     </div>
 
-    <!-- Wakeword -->
+    <!-- Personality -->
     <div class="card">
-      <h2><span class="dot"></span>Wakeword</h2>
+      <h2><span class="dot"></span>Personality Prompt</h2>
       <div class="grid">
-        <div>
-          <label for="ww_type">Type</label>
-          <select id="ww_type" data-config="wakeword.type">
-            <option value="0">SimpleVox</option>
-            <option value="1">ModuleLLM KWS</option>
-          </select>
-        </div>
-        <div>
-          <label for="ww_keyword">Keyword</label>
-          <input type="text" id="ww_keyword" data-config="wakeword.keyword">
+        <div class="full">
+          <label for="reply_prefix">Reply Prompt Prefix</label>
+          <textarea id="reply_prefix" rows="4" placeholder="You are Rosie..."></textarea>
         </div>
       </div>
     </div>
 
-    <!-- Module LLM -->
-    <div class="card">
-      <h2><span class="dot"></span>Module LLM</h2>
-      <div class="grid">
-        <div>
-          <label for="mod_rxPin">RX Pin</label>
-          <input type="number" id="mod_rxPin" placeholder="13" data-config="moduleLLM.rxPin">
-        </div>
-        <div>
-          <label for="mod_txPin">TX Pin</label>
-          <input type="number" id="mod_txPin" placeholder="14" data-config="moduleLLM.txPin">
-        </div>
-      </div>
-    </div>
-
+    <!-- Bottom actions -->
     <div class="btn-row">
-      <button id="loadBtn2" class="btn-primary">Load from Robot</button>
-      <button id="pushBtn2" class="btn-primary">Save &amp; Push</button>
+      <button id="saveBtn2" class="btn-primary">Save to .env</button>
+      <button id="restartBtn2" class="btn-danger">Restart ai-server</button>
     </div>
 
-    <footer>Stack-chan Control · ai-server bridge</footer>
+    <footer>Stack-chan Control · ai-server bridge · <code>.env</code> config</footer>
   </div>
 </body>
 </html>

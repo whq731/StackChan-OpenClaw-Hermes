@@ -14,96 +14,163 @@ if (ipArgIdx !== -1 && args[ipArgIdx + 1]) {
   robotIp = args[ipArgIdx + 1];
 }
 
+// Path to the ai-server .env (the real source of truth for config)
+const ENV_PATH = path.resolve(__dirname, '..', 'ai-server', '.env');
 const CONFIG_LOCAL_PATH = path.join(__dirname, 'config.yaml');
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Proxy: GET /config from robot
+// ---- .env parser/serializer ----
+function parseEnv(text) {
+  const config = {};
+  const lines = text.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const value = trimmed.slice(eqIdx + 1).trim();
+    config[key] = value;
+  }
+  return config;
+}
+
+function serializeEnv(config, originalText) {
+  // Preserve comments and ordering from original .env, just update values
+  const lines = originalText.split('\n');
+  const result = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      result.push(line);
+      continue;
+    }
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx === -1) {
+      result.push(line);
+      continue;
+    }
+    const key = trimmed.slice(0, eqIdx).trim();
+    if (key in config) {
+      result.push(`${key}=${config[key]}`);
+    } else {
+      result.push(line);
+    }
+  }
+  // Append any new keys that weren't in the original
+  const knownKeys = new Set(
+    lines
+      .filter(l => l.trim() && !l.trim().startsWith('#'))
+      .map(l => l.slice(0, l.indexOf('=')).trim())
+      .filter(Boolean)
+  );
+  for (const [key, value] of Object.entries(config)) {
+    if (!knownKeys.has(key)) {
+      result.push(`${key}=${value}`);
+    }
+  }
+  return result.join('\n');
+}
+
+// ---- API: Load config from .env ----
 app.get('/api/config', (req, res) => {
-  const ip = req.query.robotIp || robotIp || '';
-  if (!ip) return res.status(400).json({ error: 'No robot IP specified' });
-  
-  const options = {
-    hostname: ip,
-    port: 80,
-    path: '/config',
-    method: 'GET',
-    timeout: 5000,
-  };
-  
-  const proxyReq = http.request(options, (proxyRes) => {
-    let body = '';
-    proxyRes.on('data', chunk => body += chunk);
-    proxyRes.on('end', () => {
-      try {
-        const json = JSON.parse(body);
-        res.json(json);
-      } catch {
-        res.status(502).json({ error: 'Invalid response from robot', raw: body.substring(0, 500) });
-      }
-    });
-  });
-  
-  proxyReq.on('error', (e) => {
-    res.status(502).json({ error: `Cannot reach robot at ${ip}: ${e.message}` });
-  });
-  proxyReq.on('timeout', () => {
-    proxyReq.destroy();
-    res.status(504).json({ error: `Robot at ${ip} timed out` });
-  });
-  
-  proxyReq.end();
+  try {
+    if (!fs.existsSync(ENV_PATH)) {
+      return res.status(404).json({ error: `.env not found at ${ENV_PATH}` });
+    }
+    const text = fs.readFileSync(ENV_PATH, 'utf8');
+    const config = parseEnv(text);
+    res.json({ config, ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// Proxy: POST /config_set to robot
-app.post('/api/config_set', (req, res) => {
-  const ip = req.body.robotIp || robotIp || '';
-  if (!ip) return res.status(400).json({ error: 'No robot IP specified' });
-  
-  const configData = JSON.stringify(req.body.config);
-  
-  const options = {
-    hostname: ip,
-    port: 80,
-    path: '/config_set',
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(configData),
-    },
-    timeout: 10000,
-  };
-  
-  const proxyReq = http.request(options, (proxyRes) => {
-    let body = '';
-    proxyRes.on('data', chunk => body += chunk);
-    proxyRes.on('end', () => {
-      // Also save locally
-      saveLocalConfig(req.body.config);
-      res.status(proxyRes.statusCode).json({ ok: true, robotResponse: body });
-    });
-  });
-  
-  proxyReq.on('error', (e) => {
-    // Save locally even if robot is unreachable
-    saveLocalConfig(req.body.config);
-    res.status(502).json({ error: `Cannot reach robot at ${ip}: ${e.message}`, localSaved: true });
-  });
-  proxyReq.on('timeout', () => {
-    proxyReq.destroy();
-    saveLocalConfig(req.body.config);
-    res.status(504).json({ error: `Robot at ${ip} timed out`, localSaved: true });
-  });
-  
-  proxyReq.write(configData);
-  proxyReq.end();
+// ---- API: Save config to .env ----
+app.post('/api/config_set', async (req, res) => {
+  try {
+    const config = req.body.config || {};
+    // Read original .env to preserve comments/ordering
+    let originalText = '';
+    if (fs.existsSync(ENV_PATH)) {
+      originalText = fs.readFileSync(ENV_PATH, 'utf8');
+    }
+    const newText = serializeEnv(config, originalText);
+    fs.writeFileSync(ENV_PATH, newText, 'utf8');
+    console.log('[config-editor] Saved .env at', ENV_PATH);
+    res.json({ ok: true, message: 'Saved to .env. Restart ai-server to apply.' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// Save locally
+// ---- API: Save local backup ----
 app.post('/api/config_local', (req, res) => {
-  saveLocalConfig(req.body.config);
-  res.json({ ok: true });
+  try {
+    saveLocalConfig(req.body.config);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/config_local', (req, res) => {
+  try {
+    if (fs.existsSync(CONFIG_LOCAL_PATH)) {
+      const yaml = fs.readFileSync(CONFIG_LOCAL_PATH, 'utf8');
+      res.json({ yaml, ok: true });
+    } else {
+      res.json({ yaml: null, ok: false });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---- API: Restart ai-server ----
+app.post('/api/restart', async (req, res) => {
+  try {
+    // Kill existing ai-server on port 8765
+    const { execSync } = require('child_process');
+    try {
+      const pid = execSync(`lsof -tiTCP:8765 -sTCP:LISTEN`, { encoding: 'utf8' }).trim();
+      if (pid) {
+        process.kill(parseInt(pid), 'SIGTERM');
+        console.log('[config-editor] Killed ai-server PID', pid);
+        // Wait a moment
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    } catch (e) {
+      // No process to kill, fine
+    }
+    // Start fresh
+    const { spawn } = require('child_process');
+    const envDir = path.resolve(__dirname, '..', 'ai-server');
+    const child = spawn('npx', ['tsx', 'src/index.ts'], {
+      cwd: envDir,
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    console.log('[config-editor] Started ai-server PID', child.pid);
+    // Wait for it to come up
+    await new Promise(r => setTimeout(r, 3000));
+    // Verify
+    try {
+      const check = execSync(`lsof -tiTCP:8765 -sTCP:LISTEN`, { encoding: 'utf8' }).trim();
+      if (check) {
+        res.json({ ok: true, message: 'ai-server restarted', pid: check });
+      } else {
+        res.json({ ok: false, message: 'ai-server start attempted but port not listening yet' });
+      }
+    } catch {
+      res.json({ ok: false, message: 'ai-server start attempted but port not listening yet' });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ---- Live Controls: Volume & Tone ----
@@ -150,6 +217,13 @@ app.post('/api/volume', async (req, res) => {
     if (result && result.success === false) {
       return res.status(502).json({ error: result.error || 'Robot rejected volume change' });
     }
+    // Also update BOOT_VOLUME in .env so it persists across reconnects
+    if (fs.existsSync(ENV_PATH)) {
+      const text = fs.readFileSync(ENV_PATH, 'utf8');
+      const config = parseEnv(text);
+      config['STACKCHAN_BOOT_VOLUME'] = String(Math.round(volume));
+      fs.writeFileSync(ENV_PATH, serializeEnv(config, text), 'utf8');
+    }
     res.json({ ok: true, result });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -165,20 +239,6 @@ app.post('/api/tone', async (req, res) => {
     res.json({ ok: true, result });
   } catch (e) {
     res.status(502).json({ error: e.message });
-  }
-});
-
-// Load locally
-app.get('/api/config_local', (req, res) => {
-  try {
-    if (fs.existsSync(CONFIG_LOCAL_PATH)) {
-      const yaml = fs.readFileSync(CONFIG_LOCAL_PATH, 'utf8');
-      res.json({ yaml, ok: true });
-    } else {
-      res.json({ yaml: null, ok: false });
-    }
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
 });
 
@@ -215,9 +275,8 @@ function jsonToYaml(obj, indent = 0) {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[config-editor] Running on http://0.0.0.0:${PORT}`);
+  console.log(`[config-editor] Config source: ${ENV_PATH}`);
   if (robotIp) {
     console.log(`[config-editor] Robot IP: ${robotIp}`);
-  } else {
-    console.log('[config-editor] No robot IP set — enter it in the UI');
   }
 });

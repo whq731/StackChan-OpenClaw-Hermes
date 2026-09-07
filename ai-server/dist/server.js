@@ -9,9 +9,12 @@ const ws_1 = require("ws");
 const session_js_1 = require("./session.js");
 const media_js_1 = require("./media.js");
 const device_config_js_1 = require("./device_config.js");
+const ota_config_js_1 = require("./ota_config.js");
 const DEVICE_KEEPALIVE_INTERVAL_MS = Math.max(1000, Number(process.env.STACKCHAN_WS_KEEPALIVE_MS ?? '3000') || 3000);
 function startServer(port) {
     const server = http_1.default.createServer((req, res) => {
+        if ((0, ota_config_js_1.serveOtaRequest)(req, res))
+            return;
         if ((0, media_js_1.serveMediaRequest)(req, res))
             return;
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });

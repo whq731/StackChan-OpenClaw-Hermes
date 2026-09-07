@@ -9,7 +9,7 @@ const http_1 = __importDefault(require("http"));
 const media_js_1 = require("./media.js");
 const TOOL_MAP = {
     stackchan_get_status: 'self.robot.get_status',
-    stackchan_set_speaker_volume: 'self.robot.set_speaker_volume',
+    stackchan_set_speaker_volume: 'self.audio_speaker.set_volume',
     stackchan_play_test_tone: 'self.audio.play_test_tone',
     stackchan_get_head_angles: 'self.robot.get_head_angles',
     stackchan_set_head_angles: 'self.robot.set_head_angles',
@@ -131,6 +131,33 @@ function readFollowupPrompt(body) {
     }
     return prompt.trim().slice(0, 12000);
 }
+function readSayText(body) {
+    const text = body['text'];
+    if (typeof text !== 'string' || !text.trim()) {
+        throw new Error('text is required');
+    }
+    return text.trim().slice(0, 2000);
+}
+function readSayEmotion(body) {
+    const emotion = body['emotion'];
+    if (emotion === undefined || emotion === null || emotion === '')
+        return undefined;
+    if (typeof emotion !== 'string')
+        throw new Error('emotion must be a string');
+    const allowed = [
+        'neutral', 'happy', 'laughing', 'angry', 'sad', 'crying', 'sleepy', 'doubtful',
+    ];
+    if (!allowed.includes(emotion)) {
+        throw new Error(`emotion must be one of: ${allowed.join(', ')}`);
+    }
+    return emotion;
+}
+async function enqueueSayText(text, emotion) {
+    if (!activeSession) {
+        throw new Error('No StackChan device is connected');
+    }
+    await activeSession.enqueueSay(text, emotion);
+}
 async function enqueueFollowupPrompt(prompt) {
     if (!activeSession) {
         throw new Error('No StackChan device is connected');
@@ -204,7 +231,8 @@ function startDeviceControlServer(port, host = '127.0.0.1') {
             });
             return;
         }
-        if (req.method !== 'POST' || (pathname !== '/tools/call' && pathname !== '/internal/followup')) {
+        if (req.method !== 'POST' ||
+            (pathname !== '/tools/call' && pathname !== '/internal/followup' && pathname !== '/internal/say')) {
             sendJson(res, 404, { success: false, error: 'not found' });
             return;
         }
@@ -220,6 +248,11 @@ function startDeviceControlServer(port, host = '127.0.0.1') {
             }
             if (pathname === '/internal/followup') {
                 await enqueueFollowupPrompt(readFollowupPrompt(body));
+                sendJson(res, 202, { success: true, result: { queued: true } });
+                return;
+            }
+            if (pathname === '/internal/say') {
+                await enqueueSayText(readSayText(body), readSayEmotion(body));
                 sendJson(res, 202, { success: true, result: { queued: true } });
                 return;
             }

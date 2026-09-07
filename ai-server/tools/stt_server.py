@@ -6,8 +6,11 @@ import json, sys, os, tempfile, re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from faster_whisper import WhisperModel
 
-MODEL = WhisperModel("base", device="cpu", compute_type="int8")
+MODEL_NAME = os.environ.get("STT_MODEL", "base")
 LANGUAGE = os.environ.get("STT_LANGUAGE", "en")
+# Nudge whisper toward Simplified Chinese output (base/small models often emit Traditional)
+INITIAL_PROMPT = os.environ.get("STT_INITIAL_PROMPT", "以下是普通话的句子。") if LANGUAGE == "zh" else None
+MODEL = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
 
 def parse_multipart(body, boundary):
     """Extract file content from multipart/form-data."""
@@ -53,9 +56,17 @@ class SttHandler(BaseHTTPRequestHandler):
             tmp_path = f.name
         
         try:
-            segments, info = MODEL.transcribe(tmp_path, language=LANGUAGE if LANGUAGE != "auto" else None)
-            text = " ".join([s.text.strip() for s in segments]).strip()
-            print(f"[STT] transcribed ({len(audio_data)} bytes): {text!r}", file=sys.stderr)
+            segments, info = MODEL.transcribe(
+                tmp_path,
+                language=LANGUAGE if LANGUAGE != "auto" else None,
+                initial_prompt=INITIAL_PROMPT,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500},
+            )
+            # CJK text should not be joined with spaces
+            joiner = "" if LANGUAGE in ("zh", "ja", "ko") else " "
+            text = joiner.join([s.text.strip() for s in segments]).strip()
+            print(f"[STT] model={MODEL_NAME} transcribed ({len(audio_data)} bytes): {text!r}", file=sys.stderr)
             
             resp = json.dumps({"text": text}).encode()
             self.send_response(200)
@@ -74,5 +85,5 @@ class SttHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(os.environ.get("STT_PORT", "52626"))
-    print(f"[STT] faster-whisper server on port {port} (lang={LANGUAGE})", file=sys.stderr)
+    print(f"[STT] faster-whisper {MODEL_NAME} server on port {port} (lang={LANGUAGE}, initial_prompt={INITIAL_PROMPT!r})", file=sys.stderr)
     HTTPServer(("127.0.0.1", port), SttHandler).serve_forever()

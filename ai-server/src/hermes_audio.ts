@@ -70,6 +70,10 @@ function configuredSttUrl(): string {
     return process.env.HERMES_STT_URL ?? process.env.STACKCHAN_STT_URL ?? ''
 }
 
+function configuredSttFallbackUrl(): string {
+    return process.env.HERMES_STT_FALLBACK_URL ?? ''
+}
+
 function configuredLocalTtsUrl(): string {
     return process.env.STACKCHAN_LOCAL_TTS_URL ?? ''
 }
@@ -117,7 +121,16 @@ function parseJson<T>(stdout: string, label: string): T {
 
 export async function transcribeWithHermes(wav: Buffer): Promise<string> {
     const sttUrl = configuredSttUrl()
-    if (sttUrl) return await transcribeWithOpenAiCompatibleStt(wav, sttUrl)
+    if (sttUrl) {
+        try {
+            return await transcribeWithOpenAiCompatibleStt(wav, sttUrl)
+        } catch (error) {
+            const fallbackUrl = configuredSttFallbackUrl()
+            if (!fallbackUrl) throw error
+            console.warn('[stt] primary STT failed, falling back to local STT:', error instanceof Error ? error.message : error)
+            return await transcribeWithOpenAiCompatibleStt(wav, fallbackUrl)
+        }
+    }
 
     return await withTempDir(async (dir) => {
         const inputPath = path.join(dir, 'input.wav')
@@ -156,9 +169,29 @@ async function synthesizeWithLocalHttpTts(text: string, url: string): Promise<Bu
     return wav
 }
 
+// Microsoft edge-tts intermittently returns HTTP 500 "No audio was received"
+// for perfectly valid text. Retry a couple of times before giving up.
+const LOCAL_TTS_RETRIES = Number(process.env.STACKCHAN_LOCAL_TTS_RETRIES ?? 2)
+const LOCAL_TTS_RETRY_DELAY_MS = 600
+
+async function synthesizeWithLocalHttpTtsWithRetry(text: string, url: string): Promise<Buffer> {
+    let lastError: unknown
+    for (let attempt = 0; attempt <= LOCAL_TTS_RETRIES; attempt++) {
+        try {
+            return await synthesizeWithLocalHttpTts(text, url)
+        } catch (error) {
+            lastError = error
+            if (attempt < LOCAL_TTS_RETRIES) {
+                await new Promise((resolve) => setTimeout(resolve, LOCAL_TTS_RETRY_DELAY_MS * (attempt + 1)))
+            }
+        }
+    }
+    throw lastError
+}
+
 export async function synthesizeWithHermes(text: string): Promise<Buffer> {
     const localTtsUrl = configuredLocalTtsUrl()
-    if (localTtsUrl) return await synthesizeWithLocalHttpTts(text, localTtsUrl)
+    if (localTtsUrl) return await synthesizeWithLocalHttpTtsWithRetry(text, localTtsUrl)
 
     return await withTempDir(async (dir) => {
         const outputPath = path.join(dir, 'speech.wav')

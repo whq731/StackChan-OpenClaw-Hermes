@@ -65,6 +65,38 @@ OpenClaw and Hermes have different strengths. OpenClaw gives agents workspace fi
 - Python 3.9+
 - `esptool.py` (for flashing without ESP-IDF)
 
+#### Firmware baseline & protocol version
+
+The device firmware is built on the **xiaozhi-esp32 v2.2.4** client stack. The
+ai-server speaks that protocol directly — control messages (`hello`, `listen`,
+`abort`, `mcp`) over WebSocket plus binary Opus audio frames — so any
+xiaozhi-compatible ESP32-S3 firmware works. Tested target:
+
+| Item | Value |
+|------|-------|
+| Board | **M5Stack CoreS3** (ESP32-S3, 16 MB flash) |
+| Chip target | `esp32s3` |
+| Framework | ESP-IDF **v5.5.4** |
+| Protocol | xiaozhi WS, **`version: 3`** |
+| Audio | Opus — 16 kHz in (mic), 24 kHz out (speaker) |
+
+> ⚠️ **The robot finds the server through OTA, not through a config file.** On
+> boot the firmware POSTs to `CONFIG_OTA_URL`, which is **compiled into the
+> firmware**, and connects to the `websocket.url` in the response. Set it in
+> `sdkconfig.defaults` before building:
+> ```c
+> CONFIG_OTA_URL="http://<HOST_LAN_IP>:8765/ota"
+> ```
+> If your host IP changes, update this and rebuild — otherwise the robot keeps
+> knocking on a dead address and never reaches the ai-server. The response must
+> contain `"websocket"` (never `"mqtt"`, which would send the device to the
+> vendor cloud) and `version: 3`; that is exactly what the ai-server's built-in
+> `POST /ota` endpoint returns.
+
+> 💡 **Give the robot and the host static DHCP leases** in your router. With
+> dynamic leases the device IP drifts after every router restart, which looks
+> exactly like "the robot went offline".
+
 ### ai-server (the bridge)
 
 The ai-server is a TypeScript bridge between the ESP32 device and your AI agent backend. You need:
@@ -401,6 +433,29 @@ Deep research into OpenClaw's channel plugin architecture, session lifecycle, an
 
 ### Current plan
 - `research/CURRENT_PLAN.md` — living plan & findings document
+
+## Ops Notes (Sep 2026)
+
+Hardening applied to the always-on voice loop — all server-side, no reflash needed:
+
+| Concern | Fix | Config |
+|---|---|---|
+| Robot drops WS after idle periods | App-layer `{"type":"ping"}` every 60s on top of the 3s TCP `ws.ping()` | `STACKCHAN_WS_APP_PING_MS` (0 disables) |
+| TTS cuts off mid-sentence | Self-echo guard: while a TTS stream plays, `abort` / `listen:detect` from the robot's mic hearing the host speakers is swallowed; a repeat within 2s is treated as a real barge-in | `STACKCHAN_TTS_INTERRUPT_GUARD`, `STACKCHAN_TTS_INTERRUPT_GUARD_WINDOW_MS` |
+| Speech too slow | edge-tts SSML rate, measured ~6.9s → ~5.3s on the same sentence at `+30%` | `TTS_RATE` env of `tools/tts_server.py` |
+| Services surviving logout/reboot | PM2 manages ai-server (OTA + WS + control), TTS (edge-tts, :18002) and STT (faster-whisper, :52626) | `ai-server/ecosystem.config.js` — see its header comments for venv / ffmpeg / model-path pitfalls |
+
+> Note: the robot locates the server via the compiled-in OTA URL (see
+> [Firmware baseline](#firmware-baseline--protocol-version)), so **static DHCP
+> leases for both host and robot are strongly recommended** — an IP drift looks
+> exactly like "the robot went offline".
+
+### STT stack
+
+Cloud Groq `whisper-large-v3` is primary; the bundled `tools/stt_server.py`
+(faster-whisper small, OpenAI-compatible `/v1/audio/transcriptions` on :52626)
+is the offline fallback. Model weights (~460MB) are **not** in git — download
+`Systran/faster-whisper-small` into `ai-server/models/faster-whisper-small/`.
 
 ## Status — v0.1 (Aug 19, 2026)
 

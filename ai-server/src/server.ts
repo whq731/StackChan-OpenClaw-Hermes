@@ -3,11 +3,18 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { Session } from './session.js'
 import { serveMediaRequest, setObservedMediaBaseUrl } from './media.js'
 import { getDeviceBinding, type DeviceBinding } from './device_config.js'
+import { serveOtaRequest } from './ota_config.js'
 
 const DEVICE_KEEPALIVE_INTERVAL_MS = Math.max(1000, Number(process.env.STACKCHAN_WS_KEEPALIVE_MS ?? '3000') || 3000)
+// App-layer JSON heartbeat: firmware's Protocol::IsTimeout() closes the channel after 120s
+// without ANY incoming frame (WS-level ping frames don't reach the app callback).
+// Sending {"type":"ping"} refreshes last_incoming_time_ (websocket_protocol.cc refreshes it on every frame),
+// so the device keeps its audio channel open and skips the ~1s reconnect on next wake. 0 disables.
+const DEVICE_APP_PING_INTERVAL_MS = Number(process.env.STACKCHAN_WS_APP_PING_MS ?? '60000') || 0
 
 export function startServer(port: number): void {
     const server = http.createServer((req, res) => {
+        if (serveOtaRequest(req, res)) return
         if (serveMediaRequest(req, res)) return
         res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
         res.end('not found')
@@ -42,6 +49,16 @@ export function startServer(port: number): void {
                 // The close handler will clean up the session.
             }
         }, DEVICE_KEEPALIVE_INTERVAL_MS)
+        const appPingTimer = DEVICE_APP_PING_INTERVAL_MS > 0
+            ? setInterval(() => {
+                if (ws.readyState !== WebSocket.OPEN) return
+                try {
+                    ws.send(JSON.stringify({ type: 'ping' }))
+                } catch {
+                    // The close handler will clean up the session.
+                }
+            }, DEVICE_APP_PING_INTERVAL_MS)
+            : null
 
         ws.on('message', (data: Buffer | string) => {
             session.handleMessage(data)
@@ -49,6 +66,7 @@ export function startServer(port: number): void {
 
         ws.on('close', () => {
             clearInterval(keepaliveTimer)
+            if (appPingTimer) clearInterval(appPingTimer)
             console.log(`[server] disconnected: ${ip}`)
             session.close()
         })

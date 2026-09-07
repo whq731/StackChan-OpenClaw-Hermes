@@ -1,11 +1,11 @@
 backend: 0
 openclaw:
-  host: "<your-server-ip>"
+  host: "127.0.0.1"
   port: 18789
-  model: "openclaw/your-agent"
-  agent_id: "your-agent"
+  model: "openclaw/main"
+  agent_id: "main"
   bot_token: ""
-  default_model: "openclaw/your-agent"
+  default_model: "openclaw/main"
 hermes:
   host: ""
   port: 0

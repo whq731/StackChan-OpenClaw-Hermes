@@ -10,11 +10,17 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 DEFAULT_VOICE = os.environ.get("TTS_VOICE", "en-GB-LibbyNeural")
 FALLBACK_VOICE = os.environ.get("TTS_FALLBACK_VOICE", "en-GB-LibbyNeural")
 
-def is_mostly_ascii(text: str) -> bool:
-    # Always use the configured voice — no language switching
-    return True
+# Speech rate adjustment passed to edge-tts (SSML prosody rate).
+# Format: "+25%" (faster), "-10%" (slower), or "fast"/"slow". Default "+0%" = unchanged.
+TTS_RATE = os.environ.get("TTS_RATE", "+0%")
 
-async def synthesize(text: str, voice: str) -> bytes:
+def is_mostly_ascii(text: str) -> bool:
+    # True only when the text contains no CJK characters, so Chinese/Japanese
+    # text uses DEFAULT_VOICE (e.g. zh-CN-XiaoxiaoNeural) instead of the
+    # English fallback voice (which makes edge-tts return no audio).
+    return not any('\u2e80' <= ch <= '\u9fff' or '\uf900' <= ch <= '\ufaff' for ch in text)
+
+async def synthesize(text: str, voice: str, rate: str = TTS_RATE) -> bytes:
     """Use edge-tts to generate MP3, then ffmpeg to convert to WAV (24kHz mono)."""
     import edge_tts
     
@@ -22,7 +28,7 @@ async def synthesize(text: str, voice: str) -> bytes:
     wav_path = tempfile.mktemp(suffix=".wav")
     
     try:
-        communicate = edge_tts.Communicate(text, voice)
+        communicate = edge_tts.Communicate(text, voice, rate=rate)
         await communicate.save(mp3_path)
         
         # Convert MP3 to WAV (24kHz mono, 16-bit) via ffmpeg
@@ -57,7 +63,7 @@ class TtsHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "audio/wav")
             self.end_headers()
             self.wfile.write(wav)
-            print(f"[TTS] OK: {len(wav)} bytes", file=sys.stderr)
+            print(f"[TTS] OK rate={TTS_RATE}: {len(wav)} bytes", file=sys.stderr)
         except Exception as e:
             print(f"[TTS] ERROR: {e}", file=sys.stderr)
             self.send_error(500, str(e))

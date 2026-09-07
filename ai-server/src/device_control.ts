@@ -19,8 +19,19 @@ export type StackChanToolName =
 export type StackChanDeviceSession = {
     callRobotTool(name: string, args: Record<string, unknown>): Promise<unknown>
     enqueueFollowup(prompt: string): Promise<void>
+    enqueueSay(text: string, emotion?: StackChanSayEmotion): Promise<void>
     getBridgeStatus(): StackChanBridgeStatus
 }
+
+export type StackChanSayEmotion =
+    | 'neutral'
+    | 'happy'
+    | 'laughing'
+    | 'angry'
+    | 'sad'
+    | 'crying'
+    | 'sleepy'
+    | 'doubtful'
 
 export type StackChanBridgeStatus = {
     connected: boolean
@@ -172,6 +183,34 @@ function readFollowupPrompt(body: Record<string, unknown>): string {
     return prompt.trim().slice(0, 12000)
 }
 
+function readSayText(body: Record<string, unknown>): string {
+    const text = body['text']
+    if (typeof text !== 'string' || !text.trim()) {
+        throw new Error('text is required')
+    }
+    return text.trim().slice(0, 2000)
+}
+
+function readSayEmotion(body: Record<string, unknown>): StackChanSayEmotion | undefined {
+    const emotion = body['emotion']
+    if (emotion === undefined || emotion === null || emotion === '') return undefined
+    if (typeof emotion !== 'string') throw new Error('emotion must be a string')
+    const allowed: StackChanSayEmotion[] = [
+        'neutral', 'happy', 'laughing', 'angry', 'sad', 'crying', 'sleepy', 'doubtful',
+    ]
+    if (!allowed.includes(emotion as StackChanSayEmotion)) {
+        throw new Error(`emotion must be one of: ${allowed.join(', ')}`)
+    }
+    return emotion as StackChanSayEmotion
+}
+
+async function enqueueSayText(text: string, emotion?: StackChanSayEmotion): Promise<void> {
+    if (!activeSession) {
+        throw new Error('No StackChan device is connected')
+    }
+    await activeSession.enqueueSay(text, emotion)
+}
+
 async function enqueueFollowupPrompt(prompt: string): Promise<void> {
     if (!activeSession) {
         throw new Error('No StackChan device is connected')
@@ -254,7 +293,8 @@ export function startDeviceControlServer(port: number, host = '127.0.0.1'): void
             return
         }
 
-        if (req.method !== 'POST' || (pathname !== '/tools/call' && pathname !== '/internal/followup')) {
+        if (req.method !== 'POST' ||
+            (pathname !== '/tools/call' && pathname !== '/internal/followup' && pathname !== '/internal/say')) {
             sendJson(res, 404, { success: false, error: 'not found' })
             return
         }
@@ -272,6 +312,12 @@ export function startDeviceControlServer(port: number, host = '127.0.0.1'): void
 
             if (pathname === '/internal/followup') {
                 await enqueueFollowupPrompt(readFollowupPrompt(body))
+                sendJson(res, 202, { success: true, result: { queued: true } })
+                return
+            }
+
+            if (pathname === '/internal/say') {
+                await enqueueSayText(readSayText(body), readSayEmotion(body))
                 sendJson(res, 202, { success: true, result: { queued: true } })
                 return
             }

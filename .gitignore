@@ -9,6 +9,28 @@ dependencies.lock
 .env
 *.env.local
 
+# Node / Python dependencies (never commit these)
+node_modules/
+.venv/
+.venv-stt/
+venv/
+__pycache__/
+*.pyc
+
+# Runtime state
+logs/
+*.log
+.workbuddy/
+
+# Local device registry (contains real MAC addresses) — copy devices.json.example
+ai-server/devices.json
+
+# Runtime state files
+ai-server/scripts/.quant_broadcaster_state.json
+
+# Large STT model weights (download separately, see ecosystem.config.js comments)
+ai-server/models/faster-whisper-small/model.bin
+
 # IDE
 .vscode/
 .idea/

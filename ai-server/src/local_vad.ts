@@ -22,6 +22,12 @@ export type LocalRmsVadResult = {
     rms: number
 }
 
+// Common interface shared by all VAD engines (LocalRmsVad, SileroVad, ...).
+export interface VadEngine {
+    reset(): void
+    processPcm(pcm: Buffer): LocalRmsVadResult
+}
+
 export function readEnvInt(
     name: string,
     fallback: number,

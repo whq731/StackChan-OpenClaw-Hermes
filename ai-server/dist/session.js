@@ -13,15 +13,17 @@ exports.limitStackChanSpeechText = limitStackChanSpeechText;
 exports.splitStackChanSpeechText = splitStackChanSpeechText;
 exports.isIgnorableShortTranscript = isIgnorableShortTranscript;
 exports.isIgnorableTimeoutTranscript = isIgnorableTimeoutTranscript;
+exports.isLikelyHallucinationTranscript = isLikelyHallucinationTranscript;
 const crypto_1 = require("crypto");
 const audio_js_1 = require("./audio.js");
 const hermes_js_1 = require("./hermes.js");
-const openclaw_js_1 = require("./openclaw.js");
+const agent_client_js_1 = require("./agent_client.js");
 const hermes_audio_js_1 = require("./hermes_audio.js");
 const device_control_js_1 = require("./device_control.js");
 const media_js_1 = require("./media.js");
 const timing_js_1 = require("./timing.js");
 const local_vad_js_1 = require("./local_vad.js");
+const vad_js_1 = require("./vad.js");
 const local_audio_output_js_1 = require("./local_audio_output.js");
 function readEnvInt(name, fallback, min, max, env = process.env) {
     const raw = env[name];
@@ -159,7 +161,11 @@ function splitStackChanSpeechText(text, config = SPEECH_SEGMENTATION_CONFIG, fal
     if (current.trim())
         rawSegments.push(current.trim());
     const segments = rawSegments.flatMap(segment => splitLongSegment(segment, config.segmentMaxChars));
-    return segments.filter(Boolean).slice(0, config.maxSegments);
+    return segments.filter(hasSpeakableText).slice(0, config.maxSegments);
+}
+// Segments consisting only of punctuation/whitespace (e.g. "：") make edge-tts return HTTP 500; skip them.
+function hasSpeakableText(segment) {
+    return /\p{Script=Han}|\p{L}|\p{N}/u.test(segment);
 }
 function stableSpeechSegmentsFromPartialReply(text, config = SPEECH_SEGMENTATION_CONFIG) {
     const speech = normalizeSpeechText((0, media_js_1.stripMediaForSpeech)(text));
@@ -171,6 +177,38 @@ function stableSpeechSegmentsFromPartialReply(text, config = SPEECH_SEGMENTATION
     if (/[。！？!?\n]$/.test(speech))
         return segments;
     return segments.slice(0, -1);
+}
+/**
+ * After streaming TTS, determine which final segments still need to be spoken.
+ * We can't just slice by count because streaming stable segments may split at
+ * different boundaries than the final segments. Instead, we track the actual text
+ * that was spoken and re-join/re-split the remainder.
+ */
+function computeRemainingSegments(fullReply, spokenText, finalSegments) {
+    const spokenNorm = normalizeSpeechText(spokenText).trim();
+    if (!spokenNorm)
+        return finalSegments;
+    // Walk through final segments and accumulate until we've covered all spoken text
+    let acc = '';
+    let skipIdx = 0;
+    for (let i = 0; i < finalSegments.length; i++) {
+        acc += finalSegments[i];
+        const accNorm = normalizeSpeechText(acc).trim();
+        // If we've matched or exceeded the spoken text, skip through this segment
+        if (accNorm === spokenNorm) {
+            skipIdx = i + 1;
+            break;
+        }
+        if (accNorm.length >= spokenNorm.length && accNorm.startsWith(spokenNorm)) {
+            // Spoken text is a prefix of accumulated segments — partial segment match.
+            // Re-derive the unspoken portion of this segment.
+            const remainder = finalSegments[i].slice(spokenNorm.length - normalizeSpeechText(acc.slice(0, acc.length - finalSegments[i].length)).trim().length);
+            const remaining = [remainder, ...finalSegments.slice(i + 1)].filter(Boolean);
+            return remaining.length > 0 ? remaining : [];
+        }
+        skipIdx = i + 1;
+    }
+    return finalSegments.slice(skipIdx);
 }
 // auto モード: フレームが途切れてから処理開始するまでの無音判定時間 (ms)
 const TURN_CONTROL_CONFIG = readTurnControlConfig();
@@ -187,16 +225,23 @@ const AUTO_LED_CONFIG = readAutoLedConfig();
 const MAX_SPEECH_TEXT_CHARS = SPEECH_SEGMENTATION_CONFIG.maxSpeechChars;
 const MCP_REQUEST_TIMEOUT_MS = 10_000;
 const PROCESSING_KEEPALIVE_MS = 10_000;
-const PROCESS_ERROR_SPEECH = '返答処理でエラーが起きました。設定とサーバーログを確認してください。';
+const PROCESS_ERROR_SPEECH = (process.env.STACKCHAN_ERROR_SPEECH ?? 'Sorry, darling, something went wrong. Please try again.').trim() || 'Sorry, darling, something went wrong. Please try again.';
 const PROCESS_ERROR_ALERT_MAX_CHARS = 120;
 const AUTO_RESUME_LISTENING = readEnvBool('STACKCHAN_AUTO_RESUME_LISTENING', true);
+// 連続して無音空転 (empty-timeout) を何回まで許すか。この回数 × MAX_RECORDING_MS ぶん
+// ユーザーの声を拾えずに listen し続けたら、自動で待機 (idle) に戻す (無限に聞き続けない)。
+// 0 にすると空転時は即待機へ。負数を許容する場合は「無制限」を意味しないよう注意。
+const EMPTY_LISTEN_LIMIT = readEnvInt('STACKCHAN_EMPTY_LISTEN_LIMIT', 2, 0, 60);
 const IGNORE_SHORT_TRANSCRIPTS = readEnvBool('STACKCHAN_IGNORE_SHORT_TRANSCRIPTS', true);
 const TTS_PREROLL_MS = readEnvInt('STACKCHAN_TTS_PREROLL_MS', 0, 0, 600);
 const FAST_ACK_ENABLED = readEnvBool('STACKCHAN_FAST_ACK_ENABLED', false);
 const FAST_ACK_TEXT = (process.env.STACKCHAN_FAST_ACK_TEXT ?? 'はい。').trim() || 'はい。';
 const FAST_ACK_TEXTS = readFastAckTexts();
 const STOP_LLM_AFTER_MAX_SPOKEN_SEGMENTS = readEnvBool('STACKCHAN_STOP_LLM_AFTER_MAX_SPOKEN_SEGMENTS', true);
+const STANDBY_PHRASES = (process.env.STACKCHAN_STANDBY_PHRASES ?? 'standby,go to sleep,stop listening,sleep,quiet,睡觉,睡吧,休息,安静,待机,停止监听,别听了').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const STANDBY_ACK_TEXT = (process.env.STACKCHAN_STANDBY_ACK_TEXT ?? 'Going quiet, darling.').trim() || 'Going quiet, darling.';
 const MAX_DURATION_STT_RMS_THRESHOLD = readEnvFloat('STACKCHAN_MAX_DURATION_STT_RMS_THRESHOLD', 0.006, 0, 0.2);
+const BOOT_VOLUME = readEnvInt('STACKCHAN_BOOT_VOLUME', 0, 0, 100, process.env);
 const STREAMING_DECODE_FAILURE_LIMIT = readEnvInt('STACKCHAN_STREAMING_DECODE_FAILURE_LIMIT', 3, 1, 20);
 const BARGE_IN_DECODE_FAILURE_LIMIT = readEnvInt('STACKCHAN_BARGE_IN_DECODE_FAILURE_LIMIT', 3, 1, 20);
 const DEFAULT_IGNORED_SHORT_TRANSCRIPTS = new Set([
@@ -220,7 +265,7 @@ function stackChanVoicePrompt(prompt) {
     const prefix = process.env.STACKCHAN_REPLY_PROMPT_PREFIX?.trim();
     if (!prefix)
         return prompt;
-    return `${prefix}\nユーザー: ${prompt}`;
+    return `${prefix}\nUser: ${prompt}`;
 }
 function normalizedShortTranscript(text) {
     return text
@@ -249,8 +294,50 @@ function isIgnorableTimeoutTranscript(text) {
         return false;
     return DEFAULT_IGNORED_TIMEOUT_TRANSCRIPTS.has(normalized);
 }
+// Whisper (especially large-v3) hallucinates fixed phrases on music/TV/noise,
+// e.g. "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目". Drop them before the LLM turn.
+const DEFAULT_STT_HALLUCINATION_PATTERNS = [
+    '请不吝点赞',
+    '明镜与点点',
+    '打赏支持',
+    '字幕由',
+    '字幕制作',
+    '谢谢收看',
+    '谢谢观看',
+    '下期再见',
+    '请订阅',
+    '订阅频道',
+    '油管',
+    'YouTube频道',
+];
+function isLikelyHallucinationTranscript(text) {
+    const normalized = normalizedShortTranscript(text);
+    if (!normalized)
+        return false;
+    const raw = process.env.STACKCHAN_STT_HALLUCINATION_PATTERNS?.trim();
+    const patterns = raw
+        ? raw.split(',').map(item => item.trim()).filter(Boolean)
+        : DEFAULT_STT_HALLUCINATION_PATTERNS;
+    return patterns.some(pattern => normalized.includes(pattern.replace(/[\s，。]/g, '')));
+}
 function isMissingSttProviderError(message) {
     return /No STT provider available/i.test(message);
+}
+function isStandbyPhrase(text) {
+    if (STANDBY_PHRASES.length === 0)
+        return false;
+    // Normalize: lowercase, strip punctuation/whitespace, and collapse common
+    // STT variants of "rosie" (rosy, rosi, rosie) so a one-letter mishearing
+    // doesn't break the standby trigger.
+    const normalized = text.trim().toLowerCase()
+        .replace(/[、。！？!?.,，:;"'“”‘’()\[\]\s]/g, '')
+        .replace(/rosy|rosi/g, 'rosie');
+    if (!normalized)
+        return false;
+    return STANDBY_PHRASES.some(phrase => {
+        const p = phrase.replace(/[\s]/g, '').replace(/rosy|rosi/g, 'rosie');
+        return p.length > 0 && normalized.includes(p);
+    });
 }
 function compactErrorForBubble(error) {
     const raw = error instanceof Error ? error.message : String(error);
@@ -258,7 +345,7 @@ function compactErrorForBubble(error) {
     if (!compact)
         return 'unknown error';
     if (isMissingSttProviderError(compact))
-        return 'STT設定がありません。サーバー設定を確認してください。';
+        return 'STT server is not configured. Please check server settings.';
     if (compact.length <= PROCESS_ERROR_ALERT_MAX_CHARS)
         return compact;
     return `${compact.slice(0, PROCESS_ERROR_ALERT_MAX_CHARS - 3)}...`;
@@ -314,8 +401,17 @@ class Session {
     lastListenMode = '';
     processingSource = 'arrival-gap';
     currentSpeechMs = 0;
+    // 無音空転 (empty-timeout) で listen を再開した連続回数。EMPTY_LISTEN_LIMIT に達したら
+    // 自動で idle に戻し、次の wake word / listen 開始まで待つ。
+    emptyListenCount = 0;
     followupQueue = [];
     followupRunning = false;
+    sayQueue = [];
+    sayRunning = false;
+    // Set when the user dismissed the session with a standby phrase; while held,
+    // broadcast-only say/followup playback does NOT auto-resume listening.
+    // Cleared by a wake-word detect so "Hi Walle" reopens the conversation.
+    standbyHold = false;
     fastAckEntries;
     fastAckFailed = false;
     lastFastAckIndex = -1;
@@ -326,7 +422,38 @@ class Session {
         // Falls back to devices.json default, then to env var for backwards compat
         const binding = deps.deviceBinding ?? { backend: (process.env.STACKCHAN_BACKEND ?? 'hermes'), agent_id: process.env.STACKCHAN_AGENT_ID ?? 'your-agent' };
         const deviceId = deps.deviceId ?? 'unknown';
-        this.hermes = deps.hermes ?? (binding.backend === 'openclaw' ? new openclaw_js_1.OpenClawClient({ agentId: binding.agent_id, deviceId }) : new hermes_js_1.HermesClient());
+        // Backend selection: OpenClaw and Hermes both use the OpenAI-compatible HTTP client.
+        // The backend profile (session header name, key format) is resolved from the backend type.
+        // If Hermes env vars (HERMES_HOST/PORT/API_KEY/MODEL) are set, use HTTP to that endpoint.
+        // Otherwise fall back to the HermesClient (dashboard WebSocket transport).
+        // See ADR-001 for rationale and agent_client.ts for backend profile definitions.
+        if (binding.backend === 'openclaw') {
+            this.hermes = deps.hermes ?? new agent_client_js_1.AgentHttpClient({
+                agentId: binding.agent_id,
+                deviceId,
+                backend: 'openclaw',
+                host: process.env.OPENCLAW_HOST,
+                port: process.env.OPENCLAW_PORT,
+                apiKey: process.env.OPENCLAW_API_KEY,
+                model: process.env.OPENCLAW_MODEL,
+            });
+        }
+        else if (process.env.HERMES_HOST || process.env.HERMES_PORT) {
+            // Hermes via dedicated HTTP port (e.g. Venus on 8643) — uses AgentHttpClient with hermes profile
+            this.hermes = deps.hermes ?? new agent_client_js_1.AgentHttpClient({
+                agentId: binding.agent_id,
+                deviceId,
+                backend: 'hermes',
+                host: process.env.HERMES_HOST,
+                port: process.env.HERMES_PORT,
+                apiKey: process.env.HERMES_API_KEY,
+                model: process.env.HERMES_MODEL ?? 'hermes-agent',
+            });
+        }
+        else {
+            // Hermes via dashboard WebSocket (legacy/default transport)
+            this.hermes = deps.hermes ?? new hermes_js_1.HermesClient();
+        }
         this.decodeOpusFramesFn = deps.decodeOpusFrames ?? audio_js_1.decodeOpusFrames;
         this.createInputOpusDecoderFn = deps.createInputOpusDecoder ?? audio_js_1.createInputOpusDecoder;
         this.decodeOpusFrameFn = deps.decodeOpusFrame;
@@ -335,11 +462,14 @@ class Session {
         this.synthesizeTextFn = deps.synthesizeText ?? hermes_audio_js_1.synthesizeWithHermes;
         this.postTtsCooldownMs = deps.postTtsCooldownMs ?? POST_TTS_COOLDOWN_MS;
         this.localVadConfig = deps.localVadConfig ?? (0, local_vad_js_1.readLocalRmsVadConfig)();
-        this.localVad = new local_vad_js_1.LocalRmsVad(this.localVadConfig);
+        // Choosing STACKCHAN_VAD_ENGINE=silero implies local VAD on, even if
+        // STACKCHAN_LOCAL_VAD_ENABLED was left unset.
+        const vadEnabled = this.localVadConfig.enabled || (0, vad_js_1.readVadEngineSelection)() === 'silero';
+        this.localVad = (0, vad_js_1.createVad)({ ...this.localVadConfig, enabled: vadEnabled });
         this.bargeInConfig = { ...(deps.bargeInConfig ?? BARGE_IN_CONFIG) };
         if (typeof deps.bargeInEnabled === 'boolean')
             this.bargeInConfig.enabled = deps.bargeInEnabled;
-        this.bargeInVad = new local_vad_js_1.LocalRmsVad({
+        this.bargeInVad = (0, vad_js_1.createVad)({
             enabled: this.bargeInConfig.enabled,
             rmsThreshold: this.bargeInConfig.rmsThreshold,
             startSpeechMs: this.bargeInConfig.startSpeechMs,
@@ -361,6 +491,7 @@ class Session {
     close() {
         this.closed = true;
         this.followupQueue = [];
+        this.sayQueue = [];
         this.clearTimers();
         this.unregisterDeviceSession();
         this.streamingDecoder.dispose();
@@ -417,7 +548,7 @@ class Session {
         }
     }
     shouldUseLocalVad() {
-        return this.localVadConfig.enabled && !this.streamingDecodeFailed;
+        return (this.localVadConfig.enabled || (0, vad_js_1.readVadEngineSelection)() === 'silero') && !this.streamingDecodeFailed;
     }
     handleVadPayload(payload) {
         let pcm;
@@ -455,6 +586,7 @@ class Session {
         if (result.speechStarted && this.pcmChunks.length === 0) {
             this.pcmChunks = this.preRollPcmChunks.splice(0);
             this.armMaxDurationTimer();
+            this.emptyListenCount = 0;
             console.log(`[session ${this.sessionId}] vad speech started rms=${result.rms.toFixed(4)}`);
         }
         if (result.ignoredShortSpeech) {
@@ -650,7 +782,19 @@ class Session {
             clearTimeout(this.maxDurationTimer);
         this.maxDurationTimer = setTimeout(() => {
             if (this.shouldUseLocalVad() && this.pcmChunks.length === 0 && this.currentSpeechMs === 0) {
-                console.log(`[session ${this.sessionId}] max duration reached without VAD speech, restarting listen`);
+                this.emptyListenCount += 1;
+                // 無音空転が上限を超えたら、聞き続けるのをやめて待機 (idle) に戻す。
+                // 次の wake word / listen 開始で再度 activate される。
+                if (this.emptyListenCount > EMPTY_LISTEN_LIMIT) {
+                    console.log(`[session ${this.sessionId}] empty listen x${this.emptyListenCount} reached limit ${EMPTY_LISTEN_LIMIT}, returning to idle`);
+                    this.emptyListenCount = 0;
+                    this.state = 'idle';
+                    this.setAutoLedState('idle');
+                    this.resetCapture();
+                    this.clearTimers();
+                    return;
+                }
+                console.log(`[session ${this.sessionId}] max duration reached without VAD speech, restarting listen (empty x${this.emptyListenCount}/${EMPTY_LISTEN_LIMIT})`);
                 this.resetCapture();
                 this.startListening('empty-timeout');
                 return;
@@ -686,12 +830,24 @@ class Session {
                 },
             });
             console.log(`[session ${this.sessionId}] hello, protocol version=${this.version}`);
+            if (BOOT_VOLUME > 0) {
+                void this.callRobotToolInternal('self.audio_speaker.set_volume', {
+                    volume: BOOT_VOLUME,
+                    permanent: true,
+                }, { automatic: true, waitForResponse: true }).then(() => {
+                    console.log(`[session ${this.sessionId}] boot volume set to ${BOOT_VOLUME}`);
+                }).catch(err => {
+                    console.warn(`[session ${this.sessionId}] boot volume set failed: ${err instanceof Error ? err.message : String(err)}`);
+                });
+            }
             return;
         }
         if (type === 'listen') {
             const listenState = msg['state'];
             if (listenState === 'start' || listenState === 'detect') {
                 const isWakeWordStart = listenState === 'detect';
+                if (isWakeWordStart)
+                    this.standbyHold = false;
                 const mode = String(msg['mode'] ?? '');
                 const source = isWakeWordStart ? `wake_word=${String(msg['text'] ?? '')}` : `mode=${mode}`;
                 if (!isWakeWordStart)
@@ -704,6 +860,8 @@ class Session {
                     this.delayListeningUntilCooldownEnds(source);
                     return;
                 }
+                // 外部からの新規ターン (wake word / listen start) は空転カウントをリセットする
+                this.emptyListenCount = 0;
                 this.startListening(source);
             }
             else if (listenState === 'stop') {
@@ -764,6 +922,11 @@ class Session {
             this.resumeListeningAfterIgnoredInput('empty-transcript');
             return;
         }
+        if (isLikelyHallucinationTranscript(text)) {
+            console.log(`[session ${this.sessionId}] ignored hallucinated transcript: "${text}"`);
+            this.resumeListeningAfterIgnoredInput('hallucinated-transcript');
+            return;
+        }
         if (isIgnorableShortTranscript(text)) {
             console.log(`[session ${this.sessionId}] ignored short transcript: "${text}"`);
             this.resumeListeningAfterIgnoredInput('ignored-short-transcript');
@@ -775,6 +938,20 @@ class Session {
             return;
         }
         this.sendJson({ type: 'stt', text });
+        // Standby phrase: stop listening and go quiet until the next wake word.
+        if (isStandbyPhrase(text)) {
+            console.log(`[session ${this.sessionId}] standby phrase detected: "${text}"`);
+            this.standbyHold = true;
+            this.state = 'idle';
+            this.setAutoLedState('idle');
+            this.clearTimers();
+            this.resetCapture();
+            this.followupQueue = [];
+            await this.speakSegments([STANDBY_ACK_TEXT], 'tts.standby').catch((error) => {
+                console.error(`[session ${this.sessionId}] standby ack speech failed:`, error);
+            });
+            return;
+        }
         await this.trySpeakFastAck();
         // 2. Hermes LLM turn -> 3. Hermes TTS -> Opus -> device
         await this.speakHermesReply(text, 'llm', 'tts');
@@ -871,6 +1048,7 @@ class Session {
                     }
                 }
             }
+            this.drainSayQueue();
             this.drainFollowupQueue();
         });
     }
@@ -879,6 +1057,63 @@ class Session {
         console.log(`[session ${this.sessionId}] follow-up prompt queued length=${prompt.length}`);
         await this.speakHermesReply(prompt, 'followup.llm', 'tts.followup');
         console.log(`[timing] done session:${this.sessionId}:followup elapsed=${(0, timing_js_1.elapsedMs)(followupStartMs)}`);
+    }
+    /**
+     * Proactive announcement: speak an exact text (no LLM turn) with an optional
+     * facial emotion. Used by external services via POST /internal/say, e.g.
+     * quant trading broadcasts. Queued and serialized like follow-ups.
+     */
+    async enqueueSay(text, emotion) {
+        const clean = text.trim();
+        if (!clean || this.closed)
+            return;
+        this.sayQueue.push({ text: clean, emotion });
+        if (this.state === 'listening') {
+            this.clearTimers();
+            this.resetCapture();
+            this.state = 'idle';
+            this.setAutoLedState('idle');
+        }
+        this.drainSayQueue();
+    }
+    drainSayQueue() {
+        if (this.closed || this.sayRunning || this.followupRunning || this.state !== 'idle')
+            return;
+        const item = this.sayQueue.shift();
+        if (!item)
+            return;
+        this.sayRunning = true;
+        this.state = 'processing';
+        this.setAutoLedState('thinking');
+        this.processSay(item).catch((err) => {
+            console.error(`[session ${this.sessionId}] say error:`, err);
+            this.setAutoLedState('error');
+        }).finally(() => {
+            this.sayRunning = false;
+            if (this.state === 'processing') {
+                this.state = 'idle';
+                this.setAutoLedState('idle');
+                if (this.shouldAutoResumeListening() && !this.standbyHold) {
+                    if (Date.now() < this.cooldownUntil) {
+                        this.delayListeningUntilCooldownEnds('post-say');
+                    }
+                    else {
+                        this.startListening('post-say');
+                    }
+                }
+            }
+            this.drainFollowupQueue();
+            this.drainSayQueue();
+        });
+    }
+    async processSay(item) {
+        const sayStartMs = (0, timing_js_1.nowMs)();
+        console.log(`[session ${this.sessionId}] say text queued length=${item.text.length} emotion=${item.emotion ?? 'neutral'}`);
+        // Emotion is delivered via the standard llm message so the firmware updates the face.
+        this.sendJson({ type: 'llm', emotion: item.emotion ?? 'neutral' });
+        const segments = splitStackChanSpeechText(item.text, this.speechSegmentationConfig);
+        await this.speakSegments(segments, 'tts.say');
+        console.log(`[timing] done session:${this.sessionId}:say elapsed=${(0, timing_js_1.elapsedMs)(sayStartMs)}`);
     }
     async speakHermesReply(prompt, llmLabel, ttsLabel) {
         const hermesPrompt = stackChanVoicePrompt(prompt);
@@ -917,6 +1152,7 @@ class Session {
         const llmStartMs = (0, timing_js_1.nowMs)();
         let reply = '';
         let spokenSegments = 0;
+        let spokenText = '';
         let playback;
         try {
             for await (const event of streamPrompt.call(this.hermes, prompt)) {
@@ -931,7 +1167,9 @@ class Session {
                 const stableSegments = stableSpeechSegmentsFromPartialReply(reply, this.speechSegmentationConfig);
                 while (spokenSegments < stableSegments.length && this.state === 'processing') {
                     playback ??= this.startTtsPlayback(ttsLabel);
-                    await this.speakSegmentInPlayback(playback, stableSegments[spokenSegments], `${ttsLabel}.stream.segment${spokenSegments}`, spokenSegments);
+                    const segText = stableSegments[spokenSegments];
+                    await this.speakSegmentInPlayback(playback, segText, `${ttsLabel}.stream.segment${spokenSegments}`, spokenSegments);
+                    spokenText += segText;
                     spokenSegments += 1;
                     if (playback.interrupted)
                         break;
@@ -959,7 +1197,10 @@ class Session {
             return reply;
         }
         try {
-            const remainingSegments = finalSegments.slice(spokenSegments);
+            // Compare by content, not by index — streaming stable segments may
+            // split differently than the final segments, so slicing by count
+            // can drop text. Re-derive remaining segments from the unspoken tail.
+            const remainingSegments = computeRemainingSegments(reply, spokenText, finalSegments);
             await this.speakSegmentsInPlayback(playback, remainingSegments, ttsLabel, spokenSegments);
         }
         finally {
@@ -1100,7 +1341,14 @@ class Session {
         const leadSilenceMs = playback.localOutputTarget
             ? 0
             : (index === 0 && playback.streamedFrames === 0 ? TTS_PREROLL_MS : 0);
-        const audio = framesPromise ? await framesPromise : await this.synthesizeSegment(segment, label, leadSilenceMs);
+        let audio;
+        try {
+            audio = framesPromise ? await framesPromise : await this.synthesizeSegment(segment, label, leadSilenceMs);
+        }
+        catch (synthErr) {
+            console.error(`[session ${this.sessionId}] TTS synthesis failed for segment ${index}, skipping:`, synthErr);
+            return;
+        }
         onFramesReady?.();
         const localPlayback = this.startLocalSegmentPlayback(playback, audio.wav);
         const leadSilenceFrames = Math.ceil(leadSilenceMs / audio_js_1.OUTPUT_FRAME_DURATION_MS);
@@ -1165,7 +1413,7 @@ class Session {
                 console.log(`[session ${this.sessionId}] local TTS output unavailable; using M5 speaker`);
                 return;
             }
-            await this.callRobotToolInternal('self.robot.set_speaker_volume', {
+            await this.callRobotToolInternal('self.audio_speaker.set_volume', {
                 volume: 0,
                 permanent: false,
             }, { automatic: true, waitForResponse: true });
@@ -1192,7 +1440,7 @@ class Session {
             return;
         playback.m5SpeakerMutedForLocalOutput = false;
         try {
-            await this.callRobotToolInternal('self.robot.set_speaker_volume', {
+            await this.callRobotToolInternal('self.audio_speaker.set_volume', {
                 volume: this.localTtsOutputConfig.fallbackM5Volume,
                 permanent: false,
             }, { automatic: true, waitForResponse: true });

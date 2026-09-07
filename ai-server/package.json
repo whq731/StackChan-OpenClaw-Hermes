@@ -12,8 +12,11 @@
     "mcp:stackchan:dev": "tsx src/stackchan_mcp_server.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "dotenv": "^16.4.5",
+    "onnxruntime-node": "^1.20.1",
     "opusscript": "^0.1.1",
+    "undici": "^6.28.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

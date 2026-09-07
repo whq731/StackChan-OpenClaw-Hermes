@@ -20,13 +20,24 @@ export type InputOpusDecoder = {
 
 export function createInputOpusDecoder(): InputOpusDecoder {
     const decoder = new OpusScript(INPUT_SAMPLE_RATE, 1) as OpusDecoderInternals
+    let disposed = false
     return {
         decodeFrame(opus: Buffer): Buffer {
             const pcm = decoder.decode(opus)
             return Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength)
         },
         dispose(): void {
-            decoder.delete?.()
+            // opusscript's WASM destroy_handler can trap ("memory access out of
+            // bounds") on delete, which used to take down the whole bridge
+            // process when a device disconnected. Guard: delete at most once,
+            // and swallow WASM traps — the freed WASM heap is reclaimed by GC.
+            if (disposed) return
+            disposed = true
+            try {
+                decoder.delete?.()
+            } catch (err) {
+                console.warn('[audio] opus decoder dispose failed (ignored):', err instanceof Error ? err.message : err)
+            }
         },
     }
 }

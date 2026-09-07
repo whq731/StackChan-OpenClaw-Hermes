@@ -8,7 +8,8 @@ import { transcribeWithHermes, synthesizeWithHermes } from './hermes_audio.js'
 import { registerDeviceSession, type StackChanBridgeStatus } from './device_control.js'
 import { extractFirstDisplayImage, resolveDisplayImageSource, stripMediaForSpeech } from './media.js'
 import { elapsedMs, nowMs, withTiming } from './timing.js'
-import { LocalRmsVad, readLocalRmsVadConfig, rmsNormalized, type LocalRmsVadConfig } from './local_vad.js'
+import { readLocalRmsVadConfig, rmsNormalized, type LocalRmsVadConfig, type VadEngine } from './local_vad.js'
+import { createVad, readVadEngineSelection } from './vad.js'
 import {
     playWavOnLocalTarget,
     readLocalTtsOutputConfig,
@@ -142,6 +143,38 @@ function normalizeSpeechText(text: string): string {
         .trim()
 }
 
+/**
+ * Strip Markdown *formatting markers* before the text is spoken aloud, so the
+ * TTS doesn't read literal syntax like "**bold**" as "星号 星号".
+ *
+ * Only removes paired emphasis/code/heading/list markers — it keeps the visible
+ * text inside. Common text (numbers, '*' used as multiplication) is untouched.
+ */
+function stripMarkdownForSpeech(text: string): string {
+    let s = text
+        // fenced code blocks ```...``` / ~~~...~~~ → drop content (rare in speech, but if present we'd rather not read code)
+        .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/gu, ' ')
+        // code spans `x`  →  x
+        .replace(/`+([^`\n]+)`+/gu, '$1')
+        // bold / italic  **x**  *x*  (paired delimiters only, so '2*3' multiplication survives)
+        .replace(/\*\*([^*\n]+)\*\*/gu, '$1')
+        .replace(/(^|[\s(（【『])\*([^*\n]+)\*(?=$|[\s).，。！？!?、）】』,:：;；])/gu, '$1$2')
+        .replace(/__([^_\n]+)__/gu, '$1')
+        .replace(/(^|[\s(（【『])_([^_\n]+)_(?=$|[\s).，。！？!?、）】』,:：;；])/gu, '$1$2')
+        // headings  ## x  →  x
+        .replace(/^#{1,6}\s+/gmu, '')
+        // blockquote  > x  →  x
+        .replace(/^[ \t]*>[ \t]?/gmu, '')
+        // list bullets  - x  / * x  / + x  →  x
+        .replace(/^[ \t]*[-+*][ \t]+/gmu, '')
+        // stray backticks that survived the span rule
+        .replace(/`/gu, '')
+        // collapse whitespace left behind
+        .replace(/[ \t\f\v]+/g, ' ')
+        .trim()
+    return s
+}
+
 function splitLongSegment(segment: string, maxChars: number): string[] {
     if (segment.length <= maxChars) return [segment]
     const chunks: string[] = []
@@ -197,7 +230,15 @@ export function splitStackChanSpeechText(
     if (current.trim()) rawSegments.push(current.trim())
 
     const segments = rawSegments.flatMap(segment => splitLongSegment(segment, config.segmentMaxChars))
-    return segments.filter(Boolean).slice(0, config.maxSegments)
+    return segments
+        .map(segment => stripMarkdownForSpeech(segment))
+        .filter(hasSpeakableText)
+        .slice(0, config.maxSegments)
+}
+
+// Segments consisting only of punctuation/whitespace (e.g. "：") make edge-tts return HTTP 500; skip them.
+function hasSpeakableText(segment: string): boolean {
+    return /\p{Script=Han}|\p{L}|\p{N}/u.test(segment)
 }
 
 function stableSpeechSegmentsFromPartialReply(
@@ -262,13 +303,17 @@ const PROCESSING_KEEPALIVE_MS = 10_000
 const PROCESS_ERROR_SPEECH = (process.env.STACKCHAN_ERROR_SPEECH ?? 'Sorry, darling, something went wrong. Please try again.').trim() || 'Sorry, darling, something went wrong. Please try again.'
 const PROCESS_ERROR_ALERT_MAX_CHARS = 120
 const AUTO_RESUME_LISTENING = readEnvBool('STACKCHAN_AUTO_RESUME_LISTENING', true)
+// 連続して無音空転 (empty-timeout) を何回まで許すか。この回数 × MAX_RECORDING_MS ぶん
+// ユーザーの声を拾えずに listen し続けたら、自動で待機 (idle) に戻す (無限に聞き続けない)。
+// 0 にすると空転時は即待機へ。負数を許容する場合は「無制限」を意味しないよう注意。
+const EMPTY_LISTEN_LIMIT = readEnvInt('STACKCHAN_EMPTY_LISTEN_LIMIT', 2, 0, 60)
 const IGNORE_SHORT_TRANSCRIPTS = readEnvBool('STACKCHAN_IGNORE_SHORT_TRANSCRIPTS', true)
 const TTS_PREROLL_MS = readEnvInt('STACKCHAN_TTS_PREROLL_MS', 0, 0, 600)
 const FAST_ACK_ENABLED = readEnvBool('STACKCHAN_FAST_ACK_ENABLED', false)
 const FAST_ACK_TEXT = (process.env.STACKCHAN_FAST_ACK_TEXT ?? 'はい。').trim() || 'はい。'
 const FAST_ACK_TEXTS = readFastAckTexts()
 const STOP_LLM_AFTER_MAX_SPOKEN_SEGMENTS = readEnvBool('STACKCHAN_STOP_LLM_AFTER_MAX_SPOKEN_SEGMENTS', true)
-const STANDBY_PHRASES = (process.env.STACKCHAN_STANDBY_PHRASES ?? 'standby,go to sleep,stop listening,sleep,quiet').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+const STANDBY_PHRASES = (process.env.STACKCHAN_STANDBY_PHRASES ?? 'standby,go to sleep,stop listening,sleep,quiet,睡觉,睡吧,休息,安静,待机,停止监听,别听了').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
 const STANDBY_ACK_TEXT = (process.env.STACKCHAN_STANDBY_ACK_TEXT ?? 'Going quiet, darling.').trim() || 'Going quiet, darling.'
 const MAX_DURATION_STT_RMS_THRESHOLD = readEnvFloat('STACKCHAN_MAX_DURATION_STT_RMS_THRESHOLD', 0.006, 0, 0.2)
 const BOOT_VOLUME = readEnvInt('STACKCHAN_BOOT_VOLUME', 0, 0, 100, process.env)
@@ -330,6 +375,33 @@ export function isIgnorableTimeoutTranscript(text: string): boolean {
     const normalized = normalizedShortTranscript(text)
     if (!normalized) return false
     return DEFAULT_IGNORED_TIMEOUT_TRANSCRIPTS.has(normalized)
+}
+
+// Whisper (especially large-v3) hallucinates fixed phrases on music/TV/noise,
+// e.g. "请不吝点赞 订阅 转发 打赏支持明镜与点点栏目". Drop them before the LLM turn.
+const DEFAULT_STT_HALLUCINATION_PATTERNS = [
+    '请不吝点赞',
+    '明镜与点点',
+    '打赏支持',
+    '字幕由',
+    '字幕制作',
+    '谢谢收看',
+    '谢谢观看',
+    '下期再见',
+    '请订阅',
+    '订阅频道',
+    '油管',
+    'YouTube频道',
+]
+
+export function isLikelyHallucinationTranscript(text: string): boolean {
+    const normalized = normalizedShortTranscript(text)
+    if (!normalized) return false
+    const raw = process.env.STACKCHAN_STT_HALLUCINATION_PATTERNS?.trim()
+    const patterns = raw
+        ? raw.split(',').map(item => item.trim()).filter(Boolean)
+        : DEFAULT_STT_HALLUCINATION_PATTERNS
+    return patterns.some(pattern => normalized.includes(pattern.replace(/[\s，。]/g, '')))
 }
 
 function isMissingSttProviderError(message: string): boolean {
@@ -440,9 +512,9 @@ export class Session {
     private readonly transcribeWavFn: typeof transcribeWithHermes
     private readonly synthesizeTextFn: typeof synthesizeWithHermes
     private readonly localVadConfig: LocalRmsVadConfig
-    private readonly localVad: LocalRmsVad
+    private readonly localVad: VadEngine
     private readonly bargeInConfig: BargeInConfig
-    private readonly bargeInVad: LocalRmsVad
+    private readonly bargeInVad: VadEngine
     private readonly speechSegmentationConfig: SpeechSegmentationConfig
     private readonly autoLedConfig: AutoLedConfig
     private readonly localTtsOutputConfig: LocalTtsOutputConfig
@@ -470,12 +542,31 @@ export class Session {
     private lastListenMode = ''
     private processingSource: 'local-vad' | 'listen-stop' | 'max-duration' | 'arrival-gap' = 'arrival-gap'
     private currentSpeechMs = 0
+    // 無音空転 (empty-timeout) で listen を再開した連続回数。EMPTY_LISTEN_LIMIT に達したら
+    // 自動で idle に戻し、次の wake word / listen 開始まで待つ。
+    private emptyListenCount = 0
     private followupQueue: string[] = []
     private followupRunning = false
+    private sayQueue: Array<{ text: string; emotion?: StackChanEmotion }> = []
+    private sayRunning = false
+    // Set when the user dismissed the session with a standby phrase; while held,
+    // broadcast-only say/followup playback does NOT auto-resume listening.
+    // Cleared by a wake-word detect so "Hi Walle" reopens the conversation.
+    private standbyHold = false
     private fastAckEntries?: FastAckCacheEntry[]
     private fastAckFailed = false
     private lastFastAckIndex = -1
     private closed = false
+    // Echo guard: when TTS is played through the Mac speakers (local output), the
+    // robot's own microphone picks the audio up and the firmware mistakes it for a
+    // user interruption / wake word, sending `abort` or `listen:detect` mid-sentence.
+    // That flips ttsGeneration/state and kills playback halfway. While TTS is
+    // streaming we therefore swallow these signals — unless the same signal is
+    // repeated within the guard window, which means the user really wants to cut in.
+    private readonly ttsInterruptGuardEnabled: boolean
+    private readonly ttsInterruptGuardWindowMs: number
+    private lastIgnoredInterruptKey = ''
+    private lastIgnoredInterruptAt = 0
 
     constructor(private readonly ws: WebSocket, deps: SessionDeps = {}) {
         // Per-device backend selection: read binding from WS handshake (Device-Id header)
@@ -519,11 +610,16 @@ export class Session {
         this.transcribeWavFn = deps.transcribeWav ?? transcribeWithHermes
         this.synthesizeTextFn = deps.synthesizeText ?? synthesizeWithHermes
         this.postTtsCooldownMs = deps.postTtsCooldownMs ?? POST_TTS_COOLDOWN_MS
+        this.ttsInterruptGuardEnabled = readEnvBool('STACKCHAN_TTS_INTERRUPT_GUARD', true)
+        this.ttsInterruptGuardWindowMs = readEnvInt('STACKCHAN_TTS_INTERRUPT_GUARD_WINDOW_MS', 2000, 0, 30000)
         this.localVadConfig = deps.localVadConfig ?? readLocalRmsVadConfig()
-        this.localVad = new LocalRmsVad(this.localVadConfig)
+        // Choosing STACKCHAN_VAD_ENGINE=silero implies local VAD on, even if
+        // STACKCHAN_LOCAL_VAD_ENABLED was left unset.
+        const vadEnabled = this.localVadConfig.enabled || readVadEngineSelection() === 'silero'
+        this.localVad = createVad({ ...this.localVadConfig, enabled: vadEnabled })
         this.bargeInConfig = { ...(deps.bargeInConfig ?? BARGE_IN_CONFIG) }
         if (typeof deps.bargeInEnabled === 'boolean') this.bargeInConfig.enabled = deps.bargeInEnabled
-        this.bargeInVad = new LocalRmsVad({
+        this.bargeInVad = createVad({
             enabled: this.bargeInConfig.enabled,
             rmsThreshold: this.bargeInConfig.rmsThreshold,
             startSpeechMs: this.bargeInConfig.startSpeechMs,
@@ -544,6 +640,7 @@ export class Session {
     close(): void {
         this.closed = true
         this.followupQueue = []
+        this.sayQueue = []
         this.clearTimers()
         this.unregisterDeviceSession()
         this.streamingDecoder.dispose()
@@ -600,7 +697,7 @@ export class Session {
     }
 
     private shouldUseLocalVad(): boolean {
-        return this.localVadConfig.enabled && !this.streamingDecodeFailed
+        return (this.localVadConfig.enabled || readVadEngineSelection() === 'silero') && !this.streamingDecodeFailed
     }
 
     private handleVadPayload(payload: Buffer): void {
@@ -638,6 +735,7 @@ export class Session {
         if (result.speechStarted && this.pcmChunks.length === 0) {
             this.pcmChunks = this.preRollPcmChunks.splice(0)
             this.armMaxDurationTimer()
+            this.emptyListenCount = 0
             console.log(`[session ${this.sessionId}] vad speech started rms=${result.rms.toFixed(4)}`)
         }
 
@@ -832,7 +930,19 @@ export class Session {
         if (this.maxDurationTimer) clearTimeout(this.maxDurationTimer)
         this.maxDurationTimer = setTimeout(() => {
             if (this.shouldUseLocalVad() && this.pcmChunks.length === 0 && this.currentSpeechMs === 0) {
-                console.log(`[session ${this.sessionId}] max duration reached without VAD speech, restarting listen`)
+                this.emptyListenCount += 1
+                // 無音空転が上限を超えたら、聞き続けるのをやめて待機 (idle) に戻す。
+                // 次の wake word / listen 開始で再度 activate される。
+                if (this.emptyListenCount >= EMPTY_LISTEN_LIMIT) {
+                    console.log(`[session ${this.sessionId}] empty listen x${this.emptyListenCount} reached limit ${EMPTY_LISTEN_LIMIT}, returning to idle`)
+                    this.emptyListenCount = 0
+                    this.state = 'idle'
+                    this.setAutoLedState('idle')
+                    this.resetCapture()
+                    this.clearTimers()
+                    return
+                }
+                console.log(`[session ${this.sessionId}] max duration reached without VAD speech, restarting listen (empty x${this.emptyListenCount}/${EMPTY_LISTEN_LIMIT})`)
                 this.resetCapture()
                 this.startListening('empty-timeout')
                 return
@@ -886,6 +996,7 @@ export class Session {
             const listenState = msg['state'] as string | undefined
             if (listenState === 'start' || listenState === 'detect') {
                 const isWakeWordStart = listenState === 'detect'
+                if (isWakeWordStart) this.standbyHold = false
                 const mode = String(msg['mode'] ?? '')
                 const source = isWakeWordStart ? `wake_word=${String(msg['text'] ?? '')}` : `mode=${mode}`
                 if (!isWakeWordStart) this.lastListenMode = mode
@@ -897,6 +1008,9 @@ export class Session {
                     this.delayListeningUntilCooldownEnds(source)
                     return
                 }
+                // 外部からの新規ターン (wake word / listen start) は空転カウントをリセットする
+                if (this.shouldIgnoreInterruptDuringTts(isWakeWordStart ? 'wake' : 'listen')) return
+                this.emptyListenCount = 0
                 this.startListening(source)
             } else if (listenState === 'stop') {
                 this.triggerProcess('listen-stop', true)
@@ -904,6 +1018,7 @@ export class Session {
         }
 
         if (type === 'abort') {
+            if (this.shouldIgnoreInterruptDuringTts('abort')) return
             this.clearTimers()
             this.sendTtsStopOnce(this.ttsGeneration)
             this.ttsGeneration += 1
@@ -970,6 +1085,11 @@ export class Session {
             this.resumeListeningAfterIgnoredInput('empty-transcript')
             return
         }
+        if (isLikelyHallucinationTranscript(text)) {
+            console.log(`[session ${this.sessionId}] ignored hallucinated transcript: "${text}"`)
+            this.resumeListeningAfterIgnoredInput('hallucinated-transcript')
+            return
+        }
         if (isIgnorableShortTranscript(text)) {
             console.log(`[session ${this.sessionId}] ignored short transcript: "${text}"`)
             this.resumeListeningAfterIgnoredInput('ignored-short-transcript')
@@ -986,6 +1106,7 @@ export class Session {
         // Standby phrase: stop listening and go quiet until the next wake word.
         if (isStandbyPhrase(text)) {
             console.log(`[session ${this.sessionId}] standby phrase detected: "${text}"`)
+            this.standbyHold = true
             this.state = 'idle'
             this.setAutoLedState('idle')
             this.clearTimers()
@@ -1089,6 +1210,7 @@ export class Session {
                     }
                 }
             }
+            this.drainSayQueue()
             this.drainFollowupQueue()
         })
     }
@@ -1098,6 +1220,63 @@ export class Session {
         console.log(`[session ${this.sessionId}] follow-up prompt queued length=${prompt.length}`)
         await this.speakHermesReply(prompt, 'followup.llm', 'tts.followup')
         console.log(`[timing] done session:${this.sessionId}:followup elapsed=${elapsedMs(followupStartMs)}`)
+    }
+
+    /**
+     * Proactive announcement: speak an exact text (no LLM turn) with an optional
+     * facial emotion. Used by external services via POST /internal/say, e.g.
+     * quant trading broadcasts. Queued and serialized like follow-ups.
+     */
+    async enqueueSay(text: string, emotion?: StackChanEmotion): Promise<void> {
+        const clean = text.trim()
+        if (!clean || this.closed) return
+        this.sayQueue.push({ text: clean, emotion })
+        if (this.state === 'listening') {
+            this.clearTimers()
+            this.resetCapture()
+            this.state = 'idle'
+            this.setAutoLedState('idle')
+        }
+        this.drainSayQueue()
+    }
+
+    private drainSayQueue(): void {
+        if (this.closed || this.sayRunning || this.followupRunning || this.state !== 'idle') return
+        const item = this.sayQueue.shift()
+        if (!item) return
+
+        this.sayRunning = true
+        this.state = 'processing'
+        this.setAutoLedState('thinking')
+        this.processSay(item).catch((err) => {
+            console.error(`[session ${this.sessionId}] say error:`, err)
+            this.setAutoLedState('error')
+        }).finally(() => {
+            this.sayRunning = false
+            if (this.state === 'processing') {
+                this.state = 'idle'
+                this.setAutoLedState('idle')
+                if (this.shouldAutoResumeListening() && !this.standbyHold) {
+                    if (Date.now() < this.cooldownUntil) {
+                        this.delayListeningUntilCooldownEnds('post-say')
+                    } else {
+                        this.startListening('post-say')
+                    }
+                }
+            }
+            this.drainFollowupQueue()
+            this.drainSayQueue()
+        })
+    }
+
+    private async processSay(item: { text: string; emotion?: StackChanEmotion }): Promise<void> {
+        const sayStartMs = nowMs()
+        console.log(`[session ${this.sessionId}] say text queued length=${item.text.length} emotion=${item.emotion ?? 'neutral'}`)
+        // Emotion is delivered via the standard llm message so the firmware updates the face.
+        this.sendJson({ type: 'llm', emotion: item.emotion ?? 'neutral' })
+        const segments = splitStackChanSpeechText(item.text, this.speechSegmentationConfig)
+        await this.speakSegments(segments, 'tts.say')
+        console.log(`[timing] done session:${this.sessionId}:say elapsed=${elapsedMs(sayStartMs)}`)
     }
 
     private async speakHermesReply(prompt: string, llmLabel: string, ttsLabel: string): Promise<string> {
@@ -1306,6 +1485,31 @@ export class Session {
 
     private isTtsPlaybackActive(playback: TtsPlayback): boolean {
         return this.state === 'processing' && this.ttsGeneration === playback.generation
+    }
+
+    /**
+     * Decide whether an inbound interruption signal (`abort` / wake-word listen)
+     * should be swallowed while TTS is streaming.
+     *
+     * With local (Mac speaker) TTS output, the robot hears its own voice through
+     * the air and the firmware reports it as a user interruption, which used to
+     * truncate playback halfway. Repeat the same signal inside the guard window
+     * (e.g. pressing the button twice) to force a real interruption.
+     */
+    private shouldIgnoreInterruptDuringTts(key: string): boolean {
+        if (!this.ttsInterruptGuardEnabled) return false
+        if (!this.ttsStreaming) return false
+        if (this.state !== 'processing') return false
+        const now = Date.now()
+        if (this.lastIgnoredInterruptKey === key && now - this.lastIgnoredInterruptAt < this.ttsInterruptGuardWindowMs) {
+            this.lastIgnoredInterruptKey = ''
+            console.log(`[session ${this.sessionId}] interrupt ${key} during TTS repeated within ${this.ttsInterruptGuardWindowMs}ms; honoring it`)
+            return false
+        }
+        this.lastIgnoredInterruptKey = key
+        this.lastIgnoredInterruptAt = now
+        console.log(`[session ${this.sessionId}] ignored interrupt ${key} during TTS playback (echo guard)`)
+        return true
     }
 
     private prefetchSegment(segment: string, label: string, index: number): PrefetchedSegment {

@@ -1,0 +1,13 @@
+{
+  "default": {
+    "backend": "openclaw",
+    "agent_id": "main"
+  },
+  "devices": {
+    "aa:bb:cc:dd:ee:ff": {
+      "backend": "openclaw",
+      "agent_id": "main",
+      "label": "My StackChan (CoreS3)"
+    }
+  }
+}

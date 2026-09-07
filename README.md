@@ -12,6 +12,8 @@
 [![Agent: OpenClaw](https://img.shields.io/badge/agent-OpenClaw-purple.svg)](https://docs.openclaw.ai)
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support-yellow?logo=buy-me-a-coffee&logoColor=white)](https://buymeacoffee.com/aitamedia)
 
+English | **[简体中文](README.zh-CN.md)**
+
 [Project](#the-problem) · [Architecture](#architecture) · [Firmware](#firmware) · [Config Editor](#web-config-editor) · [Tests](#test-harness) · [Research](#research)
 
 </div>

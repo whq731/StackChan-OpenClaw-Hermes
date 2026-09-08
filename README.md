@@ -99,6 +99,31 @@ xiaozhi-compatible ESP32-S3 firmware works. Tested target:
 > dynamic leases the device IP drifts after every router restart, which looks
 > exactly like "the robot went offline".
 
+#### Dual-mode: local agent & official cloud (by design)
+
+The firmware intentionally supports **two connection modes** with automatic
+fallback:
+
+| Mode | Trigger | Where the robot connects | Behavior |
+|---|---|---|---|
+| **Local** (default) | The compiled-in OTA URL is reachable (`POST /ota` answers with a `websocket` section) | Your ai-server → OpenClaw / Hermes | Your own agent, workspace access, MCP tools |
+| **Official cloud** (fallback) | Local OTA is unreachable at boot | XiaoZhi cloud (`api.tenclass.net`, MQTT config persisted in NVS) | Vendor cloud AI — chats, sings, tells stories |
+
+How it works inside the firmware:
+
+- `ota.cc` reads the OTA URL from NVS (`wifi.ota_url`) first, falling back to
+  the compiled-in `CONFIG_OTA_URL`
+- `application.cc InitializeProtocol()` picks the protocol from the OTA
+  response: `mqtt` section → `MqttProtocol`, `websocket` section → `WebsocketProtocol`,
+  **neither → falls back to MQTT using the endpoint persisted in NVS**
+- The `mqtt`/`websocket` entries in NVS were written by the official firmware /
+  activation flow and are kept on purpose — they make the cloud fallback work
+
+> So if the robot suddenly sings or chats about things your agent would never
+> say — that's the official cloud answering, not your agent. Wake it up again
+> once the ai-server is back, or just wait: it re-attaches to the local server
+> on the next boot/activation.
+
 ### ai-server (the bridge)
 
 The ai-server is a TypeScript bridge between the ESP32 device and your AI agent backend. You need:

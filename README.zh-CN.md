@@ -93,6 +93,25 @@ OpenClaw 和 Hermes 各有所长。OpenClaw 给 Agent 提供工作区文件读�
 > 💡 **强烈建议在路由器上给机器人和主机绑定静态 DHCP 租约。** 动态租约下，
 > 路由器一重启设备 IP 就漂移，现象和"机器人掉线了"一模一样。
 
+#### 双模式：本地 Agent 与官方云（设计如此）
+
+固件有意支持**两种连接模式**并自动回落：
+
+| 模式 | 触发条件 | 机器人连到哪 | 表现 |
+|---|---|---|---|
+| **本地**（默认） | 编译进固件的 OTA URL 可达（`POST /ota` 应答含 `websocket` 段） | 你的 ai-server → OpenClaw / Hermes | 你自己的 Agent：工作区访问、MCP 工具 |
+| **官方云**（回落） | 开机时本地 OTA 不可达 | 小智官方云（`api.tenclass.net`，MQTT 配置持久化在 NVS） | 厂商云 AI —— 聊天、唱歌、讲故事 |
+
+固件内部的实现机制：
+
+- `ota.cc` 优先读 NVS 里的 OTA URL（`wifi.ota_url`），为空才用编译期 `CONFIG_OTA_URL`
+- `application.cc InitializeProtocol()` 按 OTA 应答选协议：含 `mqtt` 段 → `MqttProtocol`；含 `websocket` 段 → `WebsocketProtocol`；**都没有 → 回落到 MQTT，endpoint 取自 NVS 持久化配置**
+- NVS 里的 `mqtt`/`websocket` 条目由官方固件/官方激活流程写入，**有意保留** —— 它们是官方云回落能工作的前提
+
+> 所以如果机器人突然唱歌、或说出你的 Agent 绝不会说的话 —— 那是官方云在接客，
+> 不是你的 Agent。等 ai-server 恢复后再唤醒它，或者等下次开机/激活时它会自动
+> 重新挂回本地服务器。
+
 ### ai-server（桥接层）
 
 ai-server 是 ESP32 设备和 AI Agent 后端之间的 TypeScript 桥。你需要：
